@@ -516,7 +516,7 @@
   // Important = disruptive. Silent success for the rest; failures still dialog.
   function changeImportance(body) {
     if (!body || typeof body !== "object") return null;
-    if (body.leave_audit || body.mode === "normal") return { title: "Normal Protection Is On", text: "Threat Lists, Block Encrypted DNS (Port 853), and Whitelist Expiry are On. You can fine-tune any of these under Firewall → Hardening." };
+    if (body.leave_audit || body.mode === "normal") return { title: "Normal Protection Is On", text: "Threat Lists and Whitelist Expiry are On. You can fine-tune any of these under Firewall → Hardening." };
     if (body.preset === "fortnox" || body.preset === "FortNox") return { title: "FortNox Applied", text: "Block All Telemetry and Strict Outbound are on, and Remote Desktop is blocked on the home network too. Unusual apps may need Allow on the Troubleshooter." };
     if (body.mode === "block_all") return { title: "Block Everything Is On", text: "All traffic to and through the gateway is blocked. Safety computers can open the settings pages and connect over SSH. Both require signing in. Turn this off from Firewall → Protection Mode when you are ready." };
     if (body.mode === "lan_only") return { title: "Local Network Only Is On", text: "Traffic between the LAN and the internet through the gateway is blocked. Devices can still reach FoilGateway. Turn this off from Firewall → Protection Mode when you are ready." };
@@ -526,7 +526,7 @@
     if (body.admin_from === "lan") return { title: "Settings: Local Network Only", text: "This page now answers only from devices behind the gateway. The router / internet side can no longer open it." };
     // Best Practices Accept of a disruptive tip.
     if (body.accept === "strict") return { title: "FortNox Applied", text: "Block All Telemetry and Strict Outbound are on, and Remote Desktop is blocked on the home network too. Unusual apps may need Allow on the Troubleshooter." };
-    if (body.accept === "leave_audit") return { title: "Left Audit", text: "Everyday Normal protection is on now: threat lists, encrypted DNS on port 853, and whitelist expiry." };
+    if (body.accept === "leave_audit") return { title: "Left Audit", text: "Everyday Normal protection is on now: threat lists and whitelist expiry." };
     if (body.accept === "admin_lan") return { title: "Settings: Local Network Only", text: "This page now answers only from devices behind the gateway. The router / internet side can no longer open it." };
     if (body.accept === "block_ipv6" || body.accept === "ipv6_off") return { title: "Block IPv6 Is On", text: "No IPv6 traffic passes the gateway onto the LAN (neighbour discovery still works). Turn it off under Firewall → Hardening if a device needs IPv6." };
     if (body.accept === "block_vpn") return { title: "VPN Ports Are Blocked", text: "Common VPN / WireGuard ports are stopped. VPN apps on phones or PCs will fail until you turn this off under Firewall → Hardening." };
@@ -1418,13 +1418,13 @@
             panel("Hardening", h("span.pill", d.preset_chip || "Custom"),
               toggle("telemetry_all", d.telemetry_all, "Block All Telemetry", "Stops known tracking and telemetry addresses for every device, both ways. " + d.telemetry_hosts + " names known from the lists."),
               toggle("threats", d.threats, "Threat Lists", "Stops known bad networks (Spamhaus DROP and DROPv6) and botnet servers (abuse.ch Feodo), both ways. Downloaded once a day."),
-              toggle("block_dot", d.block_dot, "Block Encrypted DNS (Port 853)", "Keeps name-based blocks from being skipped by DNS over TLS. Turn on with Threat Lists."),
-              (d.threats || d.block_dot || d.doh_warning) ? h("p.notice", "Some apps use encrypted DNS on port 443. FoilGateway may not learn new names from those apps. Names already on your lists still become address blocks. Encrypted DNS on port 853 is blocked when lists are on.") : null,
+              toggle("block_dot", d.block_dot, "Block Encrypted DNS (Port 853)", "Keeps name-based blocks from being skipped by DNS over TLS. While On, devices set to require DNS over TLS (for example Android Private DNS set to a provider name) cannot look up names."),
+              (d.threats || d.block_dot || d.doh_warning) ? h("p.notice", "Some apps use encrypted DNS on port 443. FoilGateway may not learn new names from those apps. Names already on your lists still become address blocks." + (d.block_dot ? " Encrypted DNS on port 853 is blocked while Block Encrypted DNS is On." : "")) : null,
               toggle("strict_outbound", d.strict_outbound, "Strict Outbound", "Only allows new outbound that matches your rules. Stronger; odd apps may need Allow. On in FortNox."),
               toggle("block_vpn", d.block_vpn, "Block VPN Ports", "Stops common VPN / WireGuard ports. Off by default, including in FortNox."),
               toggle("block_ipv6", d.block_ipv6, "Block IPv6", "On: no IPv6 traffic passes the gateway onto the LAN. Off: IPv6 is allowed, with the same hardening as IPv4. Default Off."),
               toggle("white_expiry", d.white_expiry, "Whitelist Expiry For Auto Allows", "When On, Allows created from Audit or the Troubleshooter expire after 30 days. Allow · Permanent makes an Allow that does not expire. Default Off; On in the Normal protection level."),
-              (d.threats || d.block_dot) ? h("p.notice", "Some apps use encrypted DNS on port 443. FoilGateway may not learn new names from those apps. Names already on your lists still become address blocks. Encrypted DNS on port 853 is blocked when lists are on.") : null,
+              (d.threats || d.block_dot) ? h("p.notice", "Some apps use encrypted DNS on port 443. FoilGateway may not learn new names from those apps. Names already on your lists still become address blocks." + (d.block_dot ? " Encrypted DNS on port 853 is blocked while Block Encrypted DNS is On." : "")) : null,
               toggle("sticky_identity", d.sticky_identity, "Stronger Device Identity", "Remembers hostname and DHCP fingerprint hints when a phone rotates its private MAC. Default Off."),
               toggle("deep_detect", d.deep_detect, "Deeper Detection", "Adds quieter pattern checks beyond volume spikes (odd port sweeps, repeated soft fails). Default Off."),
               h("div.qs", h("div.stack", { id: "newdev" }, ["normal", "lan_only"].map((p) => d.new_devices === p ? h("button.isOn", { disabled: true, "aria-pressed": "true" }, POLICY[p]) : h("button.quiet", { onclick: () => change("/api/firewall", { new_devices: p }) }, POLICY[p]))), h("div", h("b", "New Devices"), h("p", "What a device gets the first time it shows up. It's flagged as new either way."))))),
@@ -1453,7 +1453,7 @@
                 statusRow("Deeper Detection", onOff(d.deep_detect)),
                 statusRow("Remote Desktop Outside", d.rdp_external ? h("span.warn", "Allowed") : h("span.ok", "Blocked")),
                 statusRow("Remote Desktop On LAN", d.rdp_lan_blocked ? h("span.ok", "Blocked") : h("span.mute", "Allowed"))),
-              (d.threats || d.block_dot) ? h("p.notice", { style: "margin-top:10px" }, "Some apps use encrypted DNS on port 443. FoilGateway may not learn new names from those apps. Names already on your lists still become address blocks. Encrypted DNS on port 853 is blocked when lists are on.") : null))),
+              (d.threats || d.block_dot) ? h("p.notice", { style: "margin-top:10px" }, "Some apps use encrypted DNS on port 443. FoilGateway may not learn new names from those apps. Names already on your lists still become address blocks." + (d.block_dot ? " Encrypted DNS on port 853 is blocked while Block Encrypted DNS is On." : "")) : null))),
           h("div.col", { "data-k": "fw-health" },
             panel("Network Health", null,
               h("div.stat-grid",

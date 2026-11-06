@@ -8,7 +8,7 @@ Everything downstream of the LAN port (switches, Wi-Fi, and all devices behind F
 
 ## Encrypted DNS on Port 443
 
-When Threat Lists or Block Encrypted DNS (Port 853) are On, FoilGateway blocks encrypted DNS on port 853. Some apps still use encrypted DNS on port 443. FoilGateway often misses new names from those apps. Names already on your lists still become address blocks. IP, port, geo, and threat hardening still apply.
+When Block Encrypted DNS (Port 853) is On, FoilGateway blocks DNS over TLS on port 853. Devices set to require DNS over TLS (for example Android Private DNS set to a provider name) cannot look up names while it is On. Some apps still use encrypted DNS on port 443. FoilGateway often misses new names from those apps. Names already on your lists still become address blocks. IP, port, geo, and threat hardening still apply.
 
 See Protection → DNS Proxy (Addon).
 

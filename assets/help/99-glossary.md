@@ -10,8 +10,8 @@ Copyright (C) 2026 iBGeek
 - **HTTPS** - the encrypted web address for this settings page.
 - **Bridge** - FoilGateway passes traffic through; your router still hands out addresses.
 - **Audit** - lets traffic through and logs what would have been blocked. Safety rules still apply.
-- **Normal** - Protection Mode that applies the Normal protection level; also the name of that level (Threat Lists On, Block All Telemetry Off); also a device policy that follows network Hardening, lists, geo, and Ports.
-- **FortNox** - Protection Level with Block All Telemetry On, Strict Outbound On, and Remote Desktop blocked on the LAN.
+- **Normal** - Protection Mode that applies the Normal protection level; also the name of that level (Threat Lists On, Block All Telemetry Off, Block Encrypted DNS Off); also a device policy that follows network Hardening, lists, geo, and Ports.
+- **FortNox** - Protection Level with Block Encrypted DNS On, Block All Telemetry On, Strict Outbound On, and Remote Desktop blocked on the LAN.
 - **Custom** - Protection Level when a Hardening setting differs from Normal and FortNox.
 - **Local Network Only** - blocks traffic between the LAN and the internet.
 - **Block Everything** - blocks all traffic to and through the gateway. Safety computers can open the settings pages and connect over SSH. Both require signing in.
@@ -25,6 +25,7 @@ Copyright (C) 2026 iBGeek
 - **Blacklist** - always stop listed hosts or nets.
 - **Strict Outbound** - allow only new outbound that matches your rules.
 - **Block IPv6** - when On, no IPv6 passes the gateway onto the LAN; when Off, IPv6 is allowed with IPv4-matching hardening. Default Off.
+- **Block Encrypted DNS** - Hardening setting that stops DNS over TLS on port 853. Off by default and in Normal; On in FortNox. While On, devices set to require DNS over TLS cannot look up names.
 - **DoT / DoH** - DNS over TLS (853) / DNS over HTTPS (often 443).
 - **Stronger Identity** - remembers hostname and DHCP fingerprint hints when a phone rotates its MAC. Default Off.
 - **Deeper Detection** - quieter pattern checks beyond volume spikes. Default Off.

@@ -16,7 +16,7 @@ Copyright (C) 2026 iBGeek
   - **Pending Undo** - the change waiting to be kept and seconds left, or None.
   - **Device uptime** and **FoilGateway uptime**.
 
-When Threat Lists or Block Encrypted DNS (Port 853) are On, a notice about encrypted DNS on port 443 appears. Some apps still use encrypted DNS on port 443. FoilGateway often misses those names. Names already on your lists still become address blocks.
+When Threat Lists or Block Encrypted DNS (Port 853) are On, a notice about encrypted DNS on port 443 appears. Some apps still use encrypted DNS on port 443. FoilGateway often misses those names. Names already on your lists still become address blocks. When Block Encrypted DNS is On, the notice also states that encrypted DNS on port 853 is blocked.
 
 ## Protection Mode
 
@@ -35,8 +35,8 @@ When Threat Lists or Block Encrypted DNS (Port 853) are On, a notice about encry
 
 **Protection Level** - a named set of Hardening settings. Applying a level also sets Protection Mode to Normal.
 
-- **Normal** - Threat Lists On, Block All Telemetry Off, Block Encrypted DNS (Port 853) On, Whitelist Expiry On, Strict Outbound Off, Block VPN Ports Off, Block IPv6 Off. Remote Desktop from outside is blocked. Remote Desktop on the LAN is allowed.
-- **FortNox** - the Normal settings, plus Block All Telemetry On, Strict Outbound On, and Remote Desktop on the LAN blocked.
+- **Normal** - Threat Lists On, Block All Telemetry Off, Block Encrypted DNS (Port 853) Off, Whitelist Expiry On, Strict Outbound Off, Block VPN Ports Off, Block IPv6 Off. Remote Desktop from outside is blocked. Remote Desktop on the LAN is allowed.
+- **FortNox** - the Normal settings, plus Block Encrypted DNS (Port 853) On, Block All Telemetry On, Strict Outbound On, and Remote Desktop on the LAN blocked.
 - **Custom** - at least one Hardening setting differs from Normal and from FortNox.
 
 **Applying a level:** Firewall → Protection Levels, Review And Apply. A list of the settings that will change is shown with OK or Cancel. Reset To Normal applies the Normal level the same way. Settings can be changed afterward under Hardening.
@@ -57,9 +57,9 @@ When Threat Lists or Block Encrypted DNS (Port 853) are On, a notice about encry
 - **On** - threat list addresses are blocked.
 - **Off** - connections to threat-list addresses pass unless another rule stops them.
 
-**Block Encrypted DNS (Port 853)** - stops DNS over TLS on port 853.
+**Block Encrypted DNS (Port 853)** - stops DNS over TLS on port 853. Off by default and in the Normal protection level. On in FortNox.
 
-- **On** - port 853 is blocked through the gateway.
+- **On** - port 853 is blocked through the gateway. Devices set to require DNS over TLS (for example Android Private DNS set to a provider name) cannot look up names.
 - **Off** - port 853 passes through the gateway.
 
 **Strict Outbound** - allows only new outbound traffic that matches your rules.

@@ -1,0 +1,564 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FoilGateway Network</title>
+<meta name="description" content="Firewall gateway for home and office networks.">
+<style>
+:root {
+  --bg: #050b14;
+  --card: #0c1826;
+  --line: #1c3348;
+  --text: #d5dde6;
+  --text-2: #c4ced8;
+  --strong: #f3f6f8;
+  --dim: #a7b4c1;
+  --head: #b7c3ce;
+  --blue: #3ec6ff;
+  --nav: #0d4f86;
+  --nav-line: #1a6cb5;
+  --ok: #3dd68c;
+  --link: #7fc4ff;
+  --btn-bg: #123a63;
+  --btn-line: #2f7bd6;
+  --card-bg: #0b1724;
+  --font: "Segoe UI", system-ui, sans-serif;
+}
+*, *::before, *::after { box-sizing: border-box; }
+html { scroll-behavior: smooth; }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font: 15px/1.55 var(--font);
+  -webkit-font-smoothing: antialiased;
+}
+a { color: var(--link); text-decoration: none; }
+a:hover { text-decoration: underline; }
+img { max-width: 100%; height: auto; display: block; }
+
+.wrap {
+  width: min(1120px, calc(100% - 40px));
+  margin: 0 auto;
+}
+
+/* Top bar */
+.top {
+  border-bottom: 1px solid var(--line);
+  background: rgba(5, 11, 20, 0.92);
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  backdrop-filter: blur(8px);
+}
+.top-inner {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 12px 0;
+  flex-wrap: wrap;
+}
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--strong);
+  text-decoration: none;
+  font-weight: 600;
+  letter-spacing: .02em;
+}
+.brand:hover { text-decoration: none; }
+.brand img { width: 28px; height: 28px; }
+.nav {
+  display: flex;
+  gap: 4px 14px;
+  margin-left: auto;
+  flex-wrap: wrap;
+  align-items: center;
+}
+.nav a {
+  color: var(--dim);
+  font-size: 13px;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+  font-weight: 600;
+  text-decoration: none;
+  padding: 4px 2px;
+}
+.nav a:hover { color: var(--strong); text-decoration: none; }
+.nav .btn {
+  margin-left: 6px;
+}
+
+/* Buttons */
+.btn {
+  display: inline-block;
+  font: 600 13px var(--font);
+  padding: 9px 16px;
+  border-radius: 6px;
+  border: 1px solid var(--btn-line);
+  background: var(--btn-bg);
+  color: var(--strong);
+  text-decoration: none;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.btn:hover { border-color: #38bdf8; text-decoration: none; color: var(--strong); }
+.btn.quiet {
+  background: transparent;
+  border-color: #2a3d52;
+  color: var(--dim);
+}
+.btn.quiet:hover { color: var(--strong); border-color: #3a5b7c; }
+.btn.lg { padding: 11px 20px; font-size: 14px; }
+
+/* Hero */
+.hero {
+  padding: 48px 0 28px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.15fr);
+  gap: 36px;
+  align-items: center;
+}
+.hero h1 {
+  margin: 0 0 10px;
+  font-size: clamp(28px, 4vw, 40px);
+  font-weight: 600;
+  color: var(--strong);
+  letter-spacing: -0.02em;
+  line-height: 1.15;
+}
+.hero .tag {
+  margin: 0 0 18px;
+  color: var(--blue);
+  font-size: 16px;
+  font-weight: 600;
+  letter-spacing: .02em;
+}
+.hero .lede {
+  margin: 0 0 22px;
+  color: var(--text-2);
+  font-size: 15px;
+  line-height: 1.6;
+  max-width: 42ch;
+}
+.hero-acts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-bottom: 18px;
+}
+.hero-shot {
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  overflow: hidden;
+  background: #071018;
+  box-shadow: 0 24px 60px rgba(0, 0, 0, .45);
+}
+.hero-shot img {
+  width: 100%;
+  display: block;
+}
+
+/* Sections */
+section {
+  padding: 36px 0;
+  border-top: 1px solid var(--line);
+}
+section h2 {
+  margin: 0 0 6px;
+  font-size: 13px;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+  color: var(--head);
+  font-weight: 600;
+}
+section .sec-title {
+  margin: 0 0 18px;
+  font-size: 24px;
+  font-weight: 600;
+  color: var(--strong);
+  letter-spacing: -0.01em;
+}
+section p.lead {
+  margin: -8px 0 20px;
+  color: var(--dim);
+  max-width: 62ch;
+  line-height: 1.55;
+}
+
+/* Install */
+.install-box {
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--card);
+  padding: 18px 18px 16px;
+}
+.install-row {
+  display: flex;
+  gap: 10px;
+  align-items: stretch;
+  flex-wrap: wrap;
+}
+.install-row pre {
+  flex: 1 1 280px;
+  margin: 0;
+  padding: 12px 14px;
+  background: #071018;
+  border: 1px solid #16304a;
+  border-radius: 8px;
+  color: var(--blue);
+  font: 13px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  overflow-x: auto;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+.install-row .btn {
+  align-self: stretch;
+  display: inline-flex;
+  align-items: center;
+}
+.install-notes {
+  margin: 14px 0 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: 6px;
+}
+.install-notes li {
+  color: var(--text-2);
+  font-size: 14px;
+  padding-left: 14px;
+  position: relative;
+}
+.install-notes li::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: .55em;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--blue);
+}
+.reqs {
+  margin-top: 16px;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+.req {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--card-bg);
+  padding: 12px 14px;
+}
+.req b {
+  display: block;
+  color: var(--strong);
+  font-size: 13px;
+  margin-bottom: 4px;
+}
+.req span {
+  color: var(--dim);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+/* Features */
+.features {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+.feat {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--card);
+  padding: 14px 15px 15px;
+  min-width: 0;
+}
+.feat h3 {
+  margin: 0 0 6px;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--strong);
+}
+.feat p {
+  margin: 0;
+  color: var(--dim);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+/* Gallery */
+.gallery {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+.gallery .shot:last-child:nth-child(odd) {
+  grid-column: 1 / -1;
+  max-width: 560px;
+  justify-self: start;
+}
+.shot {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--card);
+  overflow: hidden;
+  min-width: 0;
+}
+.shot img {
+  width: 100%;
+  background: #071018;
+  border-bottom: 1px solid var(--line);
+}
+.shot figcaption {
+  padding: 9px 12px;
+  color: var(--dim);
+  font-size: 12px;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+  font-weight: 600;
+}
+
+/* Links strip */
+.links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+/* Footer */
+.fine {
+  margin: 28px 0 0;
+  color: var(--dim);
+  font-size: 12px;
+  line-height: 1.5;
+  max-width: 78ch;
+}
+footer {
+  border-top: 1px solid var(--line);
+  padding: 22px 0 36px;
+  color: var(--dim);
+  font-size: 13px;
+}
+.foot-inner {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 24px;
+  align-items: center;
+  justify-content: space-between;
+}
+.foot-inner a { color: var(--dim); }
+.foot-inner a:hover { color: var(--link); }
+
+@media (max-width: 900px) {
+  .hero { grid-template-columns: 1fr; gap: 24px; padding-top: 32px; }
+  .hero .lede { max-width: none; }
+  .features { grid-template-columns: 1fr 1fr; }
+  .reqs { grid-template-columns: 1fr; }
+}
+@media (max-width: 640px) {
+  .wrap { width: calc(100% - 28px); }
+  .nav { width: 100%; margin-left: 0; }
+  .features { grid-template-columns: 1fr; }
+  .gallery { grid-template-columns: 1fr; }
+  .hero h1 { font-size: 28px; }
+  .top-inner { padding: 10px 0; }
+  section { padding: 28px 0; }
+}
+</style>
+</head>
+<body>
+<header class="top">
+  <div class="wrap top-inner">
+    <a class="brand" href="#">
+      <img src="images/icon.svg" alt="">
+      FoilGateway Network
+    </a>
+    <nav class="nav" aria-label="Page">
+      <a href="#install">Install</a>
+      <a href="#features">Features</a>
+      <a href="#screenshots">Screenshots</a>
+      <a href="#manual">Manual</a>
+      <a class="btn" href="https://github.com/iBgeek/FoilGateway-Network/releases/latest">Download</a>
+    </nav>
+  </div>
+</header>
+
+<main>
+  <div class="wrap hero">
+    <div>
+      <h1>FoilGateway Network</h1>
+      <p class="tag">Firewall gateway for home and office networks</p>
+      <p class="lede">FoilGateway connects between your router and your network. Your router, DHCP and DNS* keep working as they do now, with no changes to their settings. FoilGateway watches, logs and blocks the traffic that passes through it.</p>
+      <div class="hero-acts">
+        <a class="btn lg" href="#install">Install</a>
+        <a class="btn lg quiet" href="https://github.com/iBgeek/FoilGateway-Network/releases/latest">Download 1.0.1</a>
+        <a class="btn lg quiet" href="https://github.com/iBgeek/FoilGateway-Network/discussions/1">Contact Support</a>
+      </div>
+    </div>
+    <figure class="hero-shot">
+      <img src="images/00-dashboard-map.gif" width="960" height="540" alt="Dashboard with live connection map">
+    </figure>
+  </div>
+
+  <section id="install">
+    <div class="wrap">
+      <h2>Install</h2>
+      <p class="sec-title">One command on Linux</p>
+      <div class="install-box">
+        <div class="install-row">
+          <pre id="install-cmd">curl -fsSL https://github.com/iBgeek/FoilGateway-Network/releases/latest/download/install.sh | sudo sh</pre>
+          <button type="button" class="btn" id="copy-btn" aria-label="Copy install command">Copy</button>
+        </div>
+        <ul class="install-notes">
+          <li>Detects the architecture and downloads the matching binary, web package, and checksums</li>
+          <li>Verifies SHA256SUMS</li>
+          <li>Installs the service, or upgrades in place if FoilGateway is already there</li>
+          <li>Leaves existing settings untouched on a re-run</li>
+        </ul>
+      </div>
+      <div class="reqs">
+        <div class="req"><b>Hardware</b><span>Linux box with two network ports (WAN and LAN)</span></div>
+        <div class="req"><b>Architecture</b><span>x86_64 or riscv64</span></div>
+        <div class="req"><b>Init</b><span>systemd</span></div>
+      </div>
+      <p class="lead" style="margin-top:18px;margin-bottom:0">Then open <code style="color:var(--blue)">https://&lt;box&gt;:8443</code> and finish setup in the browser. After the first install, update from Settings → Updates.</p>
+    </div>
+  </section>
+
+  <section id="features">
+    <div class="wrap">
+      <h2>Features</h2>
+      <p class="sec-title">What ships in 1.0.1</p>
+      <div class="features">
+        <article class="feat">
+          <h3>Protection Mode</h3>
+          <p>Normal, Audit, Local Network Only, Block Everything</p>
+        </article>
+        <article class="feat">
+          <h3>Protection Level</h3>
+          <p>Normal, FortNox, Custom (Hardening settings under each)</p>
+        </article>
+        <article class="feat">
+          <h3>Hardening</h3>
+          <p>Threat Lists, Block All Telemetry, Block Encrypted DNS (port 853), Strict Outbound, Block VPN Ports, Block IPv6, Whitelist Expiry, Stronger Device Identity, Deeper Detection, Remote Desktop controls</p>
+        </article>
+        <article class="feat">
+          <h3>Geo-Blocking, Whitelist, and Blacklist</h3>
+          <p>Country blocks, allow list, and deny list.</p>
+        </article>
+        <article class="feat">
+          <h3>Devices</h3>
+          <p>Per-device policy, Troubleshooter, Connections Now</p>
+        </article>
+        <article class="feat">
+          <h3>Capture Log</h3>
+          <p>Searchable history of blocks, alerts, audit rows, and settings changes</p>
+        </article>
+        <article class="feat">
+          <h3>Safety</h3>
+          <p>Always-allowed hosts for settings pages and SSH; both require sign-in</p>
+        </article>
+        <article class="feat">
+          <h3>Updates</h3>
+          <p>Settings → Updates checks GitHub Releases and installs only when you ask</p>
+        </article>
+      </div>
+    </div>
+  </section>
+
+  <section id="screenshots">
+    <div class="wrap">
+      <h2>Screenshots</h2>
+      <p class="sec-title">The settings pages</p>
+      <p class="lead">Dummy data for illustration.</p>
+      <div class="gallery">
+        <figure class="shot">
+          <img src="images/02-firewall-status.png" alt="Firewall Status">
+          <figcaption>Firewall → Status</figcaption>
+        </figure>
+        <figure class="shot">
+          <img src="images/03-protection-mode.png" alt="Protection Mode">
+          <figcaption>Protection Mode</figcaption>
+        </figure>
+        <figure class="shot">
+          <img src="images/04-devices.png" alt="Devices">
+          <figcaption>Devices</figcaption>
+        </figure>
+        <figure class="shot">
+          <img src="images/05-capture-log.png" alt="Capture Log">
+          <figcaption>Capture Log</figcaption>
+        </figure>
+        <figure class="shot">
+          <img src="images/06-settings-updates.png" alt="Settings Updates">
+          <figcaption>Settings → Updates</figcaption>
+        </figure>
+        <figure class="shot">
+          <img src="images/07-settings-about.png" alt="Settings About">
+          <figcaption>Settings → About</figcaption>
+        </figure>
+        <figure class="shot">
+          <img src="images/08-protection-preview.png" alt="Protection change preview">
+          <figcaption>Protection change preview</figcaption>
+        </figure>
+      </div>
+    </div>
+  </section>
+
+  <section id="manual">
+    <div class="wrap">
+      <h2>Docs and support</h2>
+      <p class="sec-title">Manual and Contact Support</p>
+      <p class="lead">Help inside the product matches the manual. Use Download Manual on Help or About for a local copy.</p>
+      <div class="links">
+        <a class="btn lg" href="https://github.com/iBgeek/FoilGateway-Network/releases/latest/download/FoilGateway-Manual.html">Manual</a>
+        <a class="btn lg quiet" href="https://github.com/iBgeek/FoilGateway-Network/discussions/1">Contact Support</a>
+        <a class="btn lg quiet" href="https://github.com/iBgeek/FoilGateway-Network">Source on GitHub</a>
+      </div>
+    </div>
+  </section>
+  <div class="wrap">
+    <p class="fine">* Block Encrypted DNS stops DNS over TLS on port 853. It is Off by default and in the Normal protection level, and On in FortNox. While it is On, devices set to require DNS over TLS cannot look up names. Change it under Firewall → Hardening.</p>
+  </div>
+</main>
+
+<footer>
+  <div class="wrap foot-inner">
+    <span>Copyright (C) 2026 iBGeek</span>
+    <span>
+      <a href="https://github.com/iBgeek/FoilGateway-Network/blob/main/LICENSE">Software License</a>
+      ·
+      <a href="https://github.com/iBgeek/FoilGateway-Network/discussions/1">Contact Support</a>
+    </span>
+  </div>
+</footer>
+
+<script>
+(function () {
+  var btn = document.getElementById('copy-btn');
+  var cmd = document.getElementById('install-cmd');
+  if (!btn || !cmd) return;
+  btn.addEventListener('click', function () {
+    var text = cmd.textContent.trim();
+    function done() {
+      var prev = btn.textContent;
+      btn.textContent = 'Copied';
+      setTimeout(function () { btn.textContent = prev; }, 1400);
+    }
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(done).catch(function () {
+        window.prompt('Copy the install command', text);
+      });
+    } else {
+      window.prompt('Copy the install command', text);
+    }
+  });
+})();
+</script>
+</body>
+</html>

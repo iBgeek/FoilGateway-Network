@@ -56,7 +56,7 @@ impl Preset {
                 mode: Mode::Normal,
                 threats: true,
                 telemetry_all: false,
-                block_dot: true,
+                block_dot: false,
                 strict_outbound: false,
                 block_vpn: false,
                 block_ipv6: false,
@@ -129,7 +129,7 @@ impl Preset {
         push(&mut out, "Block All Telemetry", pol.telemetry_all, b.telemetry_all,
             "Stops a lot of silent phone-home traffic. A few gadgets may need Allow.");
         push(&mut out, "Block Encrypted DNS (Port 853)", pol.block_dot, b.block_dot,
-            "Keeps name-based blocks from being skipped by DNS over TLS.");
+            "Keeps name-based blocks from being skipped by DNS over TLS. While On, devices set to require DNS over TLS (for example Android Private DNS set to a provider name) cannot look up names.");
         push(&mut out, "Strict Outbound", pol.strict_outbound, b.strict_outbound,
             "Only allows new outbound that matches your rules. Unusual apps may need Allow.");
         push(&mut out, "Block VPN Ports", pol.block_vpn, b.block_vpn,
@@ -447,7 +447,7 @@ pub fn coach_suggestions(pol: &Policy, admin_from_wan: bool, answers: &serde_jso
         out.push(Suggestion {
             id: "block_dot".into(),
             title: "Block Encrypted DNS On Port 853".into(),
-            why: "Keeps name-based blocks from being skipped by DNS over TLS on port 853. Some apps use encrypted DNS on port 443, so FoilGateway may not learn those names from DNS; names already on your lists still become address blocks.".into(),
+            why: "Keeps name-based blocks from being skipped by DNS over TLS on port 853. While On, devices set to require DNS over TLS (for example Android Private DNS set to a provider name) cannot look up names. Some apps use encrypted DNS on port 443, so FoilGateway may not learn those names from DNS; names already on your lists still become address blocks.".into(),
             patch: serde_json::json!({ "block_dot": true }),
             risky: false,
             placement_block: None,
@@ -567,14 +567,14 @@ mod tests {
         leave_audit(&mut p);
         assert_eq!(p.preset, Some(Preset::Normal));
         assert_eq!(p.mode, Mode::Normal);
-        assert!(p.threats && !p.telemetry_all && p.block_dot && p.white_expiry);
+        assert!(p.threats && !p.telemetry_all && !p.block_dot && p.white_expiry);
         assert!(!p.strict_outbound && !p.block_vpn && !p.block_ipv6);
     }
 
     #[test]
     fn normal_non_disruptive_defaults() {
         let b = Preset::Normal.bundle();
-        assert!(b.threats && !b.telemetry_all && b.block_dot && b.white_expiry && b.prefer_admin_lan && !b.block_ipv6);
+        assert!(b.threats && !b.telemetry_all && !b.block_dot && b.white_expiry && b.prefer_admin_lan && !b.block_ipv6);
         assert!(!b.strict_outbound && !b.block_vpn && !b.rdp_block_lan);
     }
 
@@ -585,6 +585,22 @@ mod tests {
         assert!(b.telemetry_all);
         assert!(!b.block_vpn);
         assert!(b.rdp_block_lan);
+    }
+
+    #[test]
+    fn normal_block_dot_off_fortnox_on() {
+        assert!(!Preset::Normal.bundle().block_dot);
+        assert!(Preset::FortNox.bundle().block_dot);
+        let mut p = Policy::default();
+        Preset::Normal.apply(&mut p);
+        assert!(!p.block_dot);
+        assert_eq!(chip(&p), "Normal");
+        Preset::FortNox.apply(&mut p);
+        assert!(p.block_dot);
+        assert_eq!(chip(&p), "FortNox");
+        // Turning block_dot off while on FortNox drifts to Custom.
+        p.block_dot = false;
+        assert_eq!(chip(&p), "Custom");
     }
 
     #[test]

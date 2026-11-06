@@ -4,7 +4,9 @@ Firewall gateway for home and office networks.
 
 ![Dashboard with live connection map](docs/images/00-dashboard-map.gif)
 
-FoilGateway sits between the WAN port and the LAN port as a bridge. Traffic that crosses that path can be watched, logged, and blocked. The router still hands out addresses. Everything downstream of the LAN port is protected. Anything upstream of the WAN port is not.
+FoilGateway connects between your router and your network. Your router, DHCP and DNS* keep working as they do now, with no changes to their settings. FoilGateway watches, logs and blocks the traffic that passes through it.
+
+Everything downstream of the LAN port is protected. Anything upstream of the WAN port is not.
 
 ## Features
 
@@ -75,6 +77,8 @@ Dummy data for illustration.
 ## Support
 
 [Contact Support](https://github.com/iBgeek/FoilGateway-Network/discussions/1)
+
+* Block Encrypted DNS stops DNS over TLS on port 853. It is Off by default and in the Normal protection level, and On in FortNox. While it is On, devices set to require DNS over TLS cannot look up names. Change it under Firewall → Hardening.
 
 ## Software License
 
