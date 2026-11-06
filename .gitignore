@@ -1,0 +1,8 @@
+target/
+_scratch/
+_notes/
+_backup/
+versions/
+dist/
+NOTES.md
+PLAN-CHECK.md

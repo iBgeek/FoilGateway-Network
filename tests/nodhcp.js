@@ -1,0 +1,60 @@
+// Setup through 192.168.30.1 on a network with no router. Called by nodhcp.sh.
+const puppeteer = require("puppeteer-core");
+const [base, out] = process.argv.slice(2);
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+let failed = 0, page = null;
+const ok = (name, cond) => { console.log((cond ? "ok   " : "FAIL ") + name); if (!cond) failed++; };
+(async () => {
+  const b = await puppeteer.launch({ executablePath: "/usr/bin/google-chrome", headless: true, acceptInsecureCerts: true, args: ["--no-sandbox", "--ignore-certificate-errors", "--window-size=1200,1000"] });
+  const p = page = await b.newPage();
+  await p.setViewport({ width: 1200, height: 1000 });
+  const errors = [];
+  p.on("pageerror", (e) => errors.push(e.message));
+  const shot = async (name) => { const f = `${out}/nd-${name}.png`; await p.screenshot({ path: f, fullPage: true }); console.log("shot", f); };
+  const text = () => p.evaluate(() => document.body.innerText);
+  const waitText = (t, ms = 30000) => p.waitForFunction((t) => document.body.innerText.includes(t), { timeout: ms }, t);
+  const click = async (t) => {
+    const found = await p.evaluate((t) => { const el = [...document.querySelectorAll("button,a")].find((x) => x.textContent.trim() === t && !x.disabled); if (el) el.click(); return !!el; }, t);
+    if (!found) throw new Error("no button " + t);
+    await sleep(500);
+  };
+  const role = async (port, r) => {
+    await p.evaluate((port, r) => { const row = [...document.querySelectorAll(".portrow")].find((x) => x.querySelector("b").textContent === port); [...row.querySelectorAll(".seg button")].find((x) => x.textContent === r).click(); }, port, r);
+    await sleep(600);
+  };
+  await p.goto(base + "/", { waitUntil: "networkidle0" });
+  ok("first visit goes to setup", p.url().endsWith("/setup"));
+  await click("Start");
+  await p.waitForSelector("input[type=password]");
+  await p.$eval("#su", (el) => (el.value = "admin"));
+  const pw = await p.$$("input[type=password]");
+  await pw[0].type("correct horse battery");
+  await pw[1].type("correct horse battery");
+  await click("Next");
+  await waitText("How it sits in your network");
+  ok("Bridge picked, Router not ready", /Bridge[\s\S]*selected[\s\S]*Router[\s\S]*coming later/i.test(await text()));
+  await click("Next");
+  await waitText("Which port is which");
+  await p.waitForFunction(() => document.body.innerText.includes("10.10.10.50"), { timeout: 20000 });
+  ok("browser is on pa", await p.evaluate(() => (document.querySelector(".portrow.here b") || {}).textContent === "pa"));
+  const t = await text();
+  ok("pa shows 192.168.30.1", t.includes("192.168.30.1/24"));
+  ok("no link-local address on the page", !t.includes("169.254"));
+  await role("pa", "LAN"); await role("pc", "WAN");
+  await shot("ports");
+  await click("Next"); await sleep(400);
+  await click("Next"); await sleep(400);
+  await click("Next"); await waitText("Check before applying");
+  await click("Apply");
+  await waitText("The bridge stays", 30000);
+  ok("kept when confirmed through 192.168.30.1", true);
+  await shot("done");
+  ok("no page errors", errors.length === 0);
+  if (errors.length) console.log(errors.join("\n"));
+  await b.close();
+  process.exit(failed ? 1 : 0);
+})().catch(async (e) => {
+  console.error("FAILED", e.message);
+  if (page) console.error((await page.evaluate(() => document.body.innerText).catch(() => "")).slice(0, 1500));
+  process.exit(1);
+});

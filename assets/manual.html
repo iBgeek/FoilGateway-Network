@@ -1,0 +1,531 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>FoilGateway Network - Help Manual</title><style>
+:root { --bg:#050b14; --card:#0c1826; --line:#1c3348; --text:#d5dde6; --text-2:#c4ced8; --strong:#f3f6f8; --dim:#a7b4c1; --link:#7fc4ff; }
+body { margin:0; background:var(--bg); color:var(--text); font:15px/1.55 "Segoe UI", system-ui, sans-serif; }
+main { max-width:820px; margin:0 auto; padding:28px 20px 60px; }
+h1 { color:var(--strong); font-size:1.6rem; }
+h2 { color:var(--strong); font-size:1.2rem; margin-top:1.6em; }
+h3 { color:var(--strong); font-size:1.05rem; }
+p, li { color:var(--text-2); }
+a { color:var(--link); }
+code { background:#10243a; padding:1px 5px; border-radius:4px; font-size:.92em; }
+.help-pre { background:#0b1724; border:1px solid var(--line); border-radius:8px; padding:12px; overflow:auto; }
+.help-table { width:100%; border-collapse:collapse; margin:12px 0; display:block; overflow-x:auto; }
+.help-table th, .help-table td { text-align:left; padding:6px 8px; border-bottom:1px solid var(--line); vertical-align:top; }
+.help-table th { color:var(--strong); }
+.help-table th:first-child, .help-table td:first-child { white-space:nowrap; }
+.meta { color:var(--dim); font-size:.9rem; margin-bottom:2rem; }
+hr.chap { border:0; border-top:1px solid var(--line); margin:2.5rem 0; }
+</style></head><body><main><h1>FoilGateway Network - Help Manual</h1><p class="meta">Copyright (C) 2026 iBGeek · Version 1.0.0</p><section id="getting-started"><h1>Getting Started</h1>
+<p>Copyright (C) 2026 iBGeek</p>
+<h2>What FoilGateway Does</h2>
+<p><strong>FoilGateway Network</strong> - a bridge between the WAN port and the LAN port. Traffic that crosses that path can be watched, logged, and blocked. Your router still hands out addresses. The gateway gets its own address from the router.</p>
+<p>Everything downstream of the LAN port (switches, Wi-Fi, and all devices behind FoilGateway) is protected. Anything upstream of the WAN port is not.</p>
+<h2>First Setup</h2>
+<p>Open the gateway in a browser over HTTPS. The certificate is made on the box, so the browser warns once for each address. Trust it for this device, or install the gateway certificate authority from Settings → Certificates later.</p>
+<p>Setup steps, in order:</p>
+<ol>
+<li><strong>Welcome</strong> - shows the product name and short product description.</li>
+<li><strong>Admin</strong> (first install) - creates the first sign-in name and a password of at least 10 characters.</li>
+<li><strong>Mode</strong> - sets placement to Between Internet And Switch or Between Router And Switch. The gateway runs as a bridge.</li>
+<li><strong>Ports</strong> - sets WAN (toward the router or modem) and one or more LAN ports. Blink flashes a socket&#x27;s link light so you can identify it.</li>
+<li><strong>Settings Port</strong> - sets the HTTPS port for these pages (8443 unless you choose another).</li>
+<li><strong>Safety</strong> - turns Safety on and lists always-allowed IPv4 addresses. Add at least the computer you are using now. Sets what New Devices get: Normal or Local Network Only.</li>
+<li><strong>Review</strong> - shows WAN, LAN, Safety, and new-device policy for confirmation.</li>
+<li><strong>Apply</strong> - joins the ports into one bridge. The page must reach the gateway again. If it cannot within the rollback timer (usually about 3 minutes), the bridge comes apart and ports go back.</li>
+</ol>
+<p>After Apply you land on Done. Sign in and open the Dashboard.</p>
+<h2>Safety</h2>
+<p><strong>Safety</strong> - Safety computers can open the settings pages and connect over SSH. Both require signing in.</p>
+<p><strong>During setup:</strong> Keep Management Safety On (Recommended), list always-allowed computers by IPv4 address (comma separated; the wizard fills in the computer you are on), and pick what New Devices get (Normal or Local Network Only).</p>
+<p><strong>Later:</strong> Settings → Network &amp; Access.</p>
+<h2>Undo Timer</h2>
+<p>Many changes that could lock you out arm a rollback timer (often about 3 minutes). If this browser cannot reach the gateway afterwards, the change undoes itself. Those confirms link to If You Can&#x27;t Reach This Page.</p>
+<h2>After Setup</h2>
+<ol>
+<li>Sign in. Open the Dashboard.</li>
+<li>Leave Protection Mode on Audit while you watch traffic (fresh installs start in Audit).</li>
+<li>Open Devices. Name anything that shows only a maker string (Give It a Name).</li>
+<li>When you are ready to block for real, use Leave Audit · Apply Normal. A list of the settings that will change is shown with OK or Cancel. That applies the Normal protection level.</li>
+<li>Open Firewall → Best Practices if you want guided suggestions.</li>
+<li>When setup from the router side is finished, switch Who Can Open This Page to only devices behind the gateway (Settings → Network &amp; Access).</li>
+</ol>
+</section><hr class="chap"><section id="daily-use"><h1>Daily Use</h1>
+<p>Copyright (C) 2026 iBGeek</p>
+<h2>Dashboard</h2>
+<p><strong>Dashboard</strong> - home screen after sign-in. Status cards across the top (on or off under Settings → View):</p>
+<ul>
+<li><strong>Mode</strong> - current Protection Mode, and whether telemetry is blocked network-wide.
+</li>
+<li><strong>Traffic Path</strong> - In path or Not in path, and whether filtering is on.
+</li>
+<li><strong>WAN Speed</strong> / <strong>LAN Speed</strong> - in and out rates, two lines each.
+</li>
+<li><strong>Countries Now</strong> - countries with live connections. Click for the country names.
+</li>
+<li><strong>Devices Online</strong> - count of devices seen recently.
+</li>
+<li><strong>CPU Load</strong>, <strong>CPU Temperature</strong> (caption only when hot), <strong>Disk</strong>, <strong>Memory</strong>
+</li>
+<li><strong>Blocked Today</strong> - block count for today, with a subtitle that compares volume to what is usual for this hour.
+</li>
+</ul>
+<p>Below the cards: the live map (arcs, home ring, Pause Motion / Play Motion) and the open connections table. Alerts cover new devices, new ports, and suspicious activity.</p>
+<h3>Blocked Today</h3>
+<p>The number is today&#x27;s full block count. The subtitle compares a quieter alarm count to what is usual for this hour. Blocks from Block All Telemetry, Local Network Only, and Block All are left out of that comparison.</p>
+<p>Subtitles:</p>
+<ul>
+<li><strong>Likely attack · far above usual</strong>
+</li>
+<li><strong>Higher than usual</strong>
+</li>
+<li><strong>Usual for this hour</strong>
+</li>
+<li><strong>Open the log</strong>
+</li>
+<li><strong>Learning usual · first week</strong> (first roughly six days after a fresh install)
+</li>
+</ul>
+<p><strong>Opening today&#x27;s blocks:</strong> click Blocked Today. The Capture Log opens filtered to today&#x27;s blocks.</p>
+<h2>Devices</h2>
+<p><strong>Devices → All Devices</strong> - everything FoilGateway has seen. Search, filter (Online, New, Blocked or Local Network Only, Trusted), and sort. Scroll loads more in batches of 100.</p>
+<p>Each row shows a label, address, maker when known, policy label, and optional new / telemetry blocked labels. Unnamed devices get Give It a Name.</p>
+<p>Open a device for:</p>
+<ul>
+<li><strong>Policy</strong> - Trusted, Normal, Local Network Only, or Block All.
+</li>
+<li><strong>Audit</strong> - lets that device&#x27;s traffic through while writing down what would have been blocked.
+</li>
+<li><strong>Telemetry</strong> - stops known telemetry for this device only.
+</li>
+<li><strong>Websites and Addresses</strong> - Block It (default) or Allow It per entry.
+</li>
+<li><strong>Connections Now</strong> - live connections for that device.
+</li>
+<li><strong>More</strong> - Forget, Block All, and related actions.
+</li>
+</ul>
+<h2>Troubleshooter</h2>
+<p><strong>Devices → Troubleshooter</strong> - shows why a device&#x27;s traffic is being blocked and lets you allow it.</p>
+<p>Pick a device (or arrive from an alert). The page shows status notes, a likely-cause strip when one is known (reason, remote, protocol, port), Allow actions beside that line, and recent blocked / audit context for that device. Blocked apps can be allowed from here.</p>
+<h2>Capture Log</h2>
+<p><strong>Capture Log</strong> - searchable history of blocks, device events, alerts, audit rows, DHCP, settings changes, and list downloads.</p>
+<p>Filters: Needs a Look; kind (All, Blocked, Devices, Alerts, Audit, DHCP, Settings, Downloads); search; Today; date range; sort; Download.</p>
+<p>Retention and download controls also sit under Settings → Capture Log.</p>
+</section><hr class="chap"><section id="protection"><h1>Protection</h1>
+<p>Copyright (C) 2026 iBGeek</p>
+<h2>Firewall Home</h2>
+<p><strong>Firewall → Status</strong> shows:</p>
+<ul>
+<li><strong>Protection</strong> - Protection Mode and Protection Level.
+</li>
+<li><strong>Hardening settings</strong> - Threat Lists, Telemetry Block, Encrypted DNS (DoT 853), Strict Outbound, Block VPN Ports, Block IPv6, Whitelist Expiry, Stronger Identity, Deeper Detection, Remote Desktop Outside, Remote Desktop On LAN.
+</li>
+<li><strong>Network Health</strong>
+<ul>
+<li><strong>In Path</strong> - Yes when traffic is crossing the gateway; Not Yet when it is not.</li>
+<li><strong>Filtering</strong> - On when filtering rules are loaded; Off when they are not.</li>
+<li><strong>Bridge</strong> - Up when the bridge is up; None when there is no bridge.</li>
+<li><strong>Settings Reachable From</strong> - Local Network Only, or Home Network Or Router Side.</li>
+<li><strong>Pending Undo</strong> - the change waiting to be kept and seconds left, or None.</li>
+<li><strong>Device uptime</strong> and <strong>FoilGateway uptime</strong>.</li>
+</ul>
+</li>
+</ul>
+<p>When Threat Lists or Block Encrypted DNS (Port 853) are On, a notice about encrypted DNS on port 443 appears. Some apps still use encrypted DNS on port 443. FoilGateway often misses those names. Names already on your lists still become address blocks.</p>
+<h2>Protection Mode</h2>
+<p><strong>Protection Mode</strong> - sets how much traffic is allowed to and through the gateway.</p>
+<ul>
+<li><strong>Normal</strong> - applies the Normal protection level. Settings can be changed afterward.
+</li>
+<li><strong>Audit</strong> - lets all traffic through and logs what would have been blocked. Safety rules still apply. Fresh installs start here.
+</li>
+<li><strong>Local Network Only</strong> - blocks traffic between the LAN and the internet. Devices can still reach FoilGateway. Trusted devices are included.
+</li>
+<li><strong>Block Everything</strong> - blocks all traffic to and through the gateway. Safety computers can open the settings pages and connect over SSH. Both require signing in.
+</li>
+</ul>
+<p><strong>Changing the mode:</strong> Firewall → Protection Mode, choose a mode. A list of the settings that will change is shown with OK or Cancel. Block Everything also asks you to type BLOCK.</p>
+<p><strong>Leave Audit · Apply Normal</strong> applies the Normal protection level. A list of the settings that will change is shown with OK or Cancel.</p>
+<h2>Protection Levels</h2>
+<p><strong>Protection Level</strong> - a named set of Hardening settings. Applying a level also sets Protection Mode to Normal.</p>
+<ul>
+<li><strong>Normal</strong> - Threat Lists On, Block All Telemetry Off, Block Encrypted DNS (Port 853) On, Whitelist Expiry On, Strict Outbound Off, Block VPN Ports Off, Block IPv6 Off. Remote Desktop from outside is blocked. Remote Desktop on the LAN is allowed.
+</li>
+<li><strong>FortNox</strong> - the Normal settings, plus Block All Telemetry On, Strict Outbound On, and Remote Desktop on the LAN blocked.
+</li>
+<li><strong>Custom</strong> - at least one Hardening setting differs from Normal and from FortNox.
+</li>
+</ul>
+<p><strong>Applying a level:</strong> Firewall → Protection Levels, Review And Apply. A list of the settings that will change is shown with OK or Cancel. Reset To Normal applies the Normal level the same way. Settings can be changed afterward under Hardening.</p>
+<h2>Hardening</h2>
+<p><strong>Hardening</strong> - the individual settings that Normal and FortNox set. Changing one moves the Protection Level to Custom.</p>
+<p><strong>Opening it:</strong> Firewall → Hardening.</p>
+<p><strong>Block All Telemetry</strong> - stops known tracking and telemetry addresses for every device, both ways.</p>
+<ul>
+<li><strong>On</strong> - those addresses are blocked.
+</li>
+<li><strong>Off</strong> - telemetry addresses pass unless a device has its own telemetry block.
+</li>
+</ul>
+<p><strong>Threat Lists</strong> - stops known bad networks (Spamhaus DROP and DROPv6) and botnet servers (abuse.ch Feodo), both ways. Lists download about once a day.</p>
+<ul>
+<li><strong>On</strong> - threat list addresses are blocked.
+</li>
+<li><strong>Off</strong> - connections to threat-list addresses pass unless another rule stops them.
+</li>
+</ul>
+<p><strong>Block Encrypted DNS (Port 853)</strong> - stops DNS over TLS on port 853.</p>
+<ul>
+<li><strong>On</strong> - port 853 is blocked through the gateway.
+</li>
+<li><strong>Off</strong> - port 853 passes through the gateway.
+</li>
+</ul>
+<p><strong>Strict Outbound</strong> - allows only new outbound traffic that matches your rules.</p>
+<ul>
+<li><strong>On</strong> - new outbound that matches no rule is blocked. Blocked apps can be allowed from Devices → Troubleshooter.
+</li>
+<li><strong>Off</strong> - new outbound follows Whitelist, Blacklist, threat lists, geo, Ports, and the other Hardening settings only.
+</li>
+</ul>
+<p><strong>Block VPN Ports</strong> - stops common VPN / WireGuard ports (51820, 1194, 500, 4500).</p>
+<ul>
+<li><strong>On</strong> - those ports are blocked through the gateway.
+</li>
+<li><strong>Off</strong> - those ports pass through the gateway.
+</li>
+</ul>
+<p><strong>Block IPv6</strong> - controls IPv6 through the gateway onto the LAN. Default Off.</p>
+<ul>
+<li><strong>On</strong> - no IPv6 traffic passes the gateway onto the LAN. Neighbour discovery and DHCPv6 still work.
+</li>
+<li><strong>Off</strong> - IPv6 is allowed through the gateway with the same hardening that applies to IPv4.
+</li>
+</ul>
+<p><strong>Whitelist Expiry For Auto Allows</strong> - time limit for Allows created from Audit or the Troubleshooter. Default Off.</p>
+<ul>
+<li><strong>On</strong> - those Allows expire after 30 days.
+</li>
+<li><strong>Off</strong> - those Allows stay until you remove them.
+</li>
+</ul>
+<p><strong>Allow · Permanent</strong> - creates an Allow that stays until you remove it, whether Whitelist Expiry is On or Off.</p>
+<p><strong>Stronger Device Identity</strong> - remembers hostname and DHCP fingerprint hints when a phone rotates its private MAC. Default Off.</p>
+<ul>
+<li><strong>On</strong> - those hints are used for returning devices.
+</li>
+</ul>
+<p><strong>Deeper Detection</strong> - quieter pattern checks beyond volume spikes, including odd port sweeps and repeated soft fails. Default Off.</p>
+<ul>
+<li><strong>On</strong> - those checks run and can raise more alerts.
+</li>
+</ul>
+<p><strong>New Devices</strong> - what a device gets the first time its MAC shows up. The device is flagged as new either way.</p>
+<ul>
+<li><strong>Normal</strong> - the device starts with the Normal device policy.
+</li>
+<li><strong>Local Network Only</strong> - the device starts with the Local Network Only device policy.
+</li>
+</ul>
+<h2>Best Practices</h2>
+<p><strong>Best Practices</strong> - Firewall → Best Practices. You will be presented with several questions. After which you will be given a list of best practices that match your answers and an opportunity to instate those changes or ignore the recommendations.</p>
+<h2>Geo-Blocking</h2>
+<p><strong>Geo-Blocking</strong> - stops traffic to and from ticked countries, both ways. Trusted devices skip geo-blocking.</p>
+<p><strong>Using it:</strong> Firewall → Geo-Blocking. Tick a country to block it. Changes apply as you tick. Country blocking needs the location database. If the database is Off, the page links to Settings → Time and Location.</p>
+<h2>Whitelist and Blacklist</h2>
+<p><strong>Whitelist</strong> - always lets the listed hosts, URLs, or addresses through. Whitelist beats telemetry blocks, Blacklist, threat lists, and countries. Local Network Only and Block Everything still apply when a Whitelist entry is present. Names are looked up again every few minutes. Every address a name ever had stays in. When Whitelist Expiry is On, Allows created from Audit or the Troubleshooter expire after 30 days unless you used Allow · Permanent.</p>
+<p><strong>Blacklist</strong> - always stops the listed hosts, URLs, or addresses, both ways. Trusted devices skip the Blacklist.</p>
+<p><strong>Editing lists:</strong> Firewall → Whitelist or Firewall → Blacklist.</p>
+<h2>Audit</h2>
+<p><strong>Audit</strong> - while Audit is on for the whole network or for one device, the list shows traffic that would have been blocked but was let through.</p>
+<p><strong>Buttons on each row:</strong></p>
+<ul>
+<li><strong>Allow · Permanent</strong> - keeps that destination allowed. The Allow stays until you remove it.
+</li>
+<li><strong>Keep Blocking</strong> - the destination stays blocked once Audit is off.
+</li>
+</ul>
+<p><strong>Leave Audit · Apply Normal</strong> applies the Normal protection level. A list of the settings that will change is shown with OK or Cancel.</p>
+<p><strong>Opening it:</strong> Firewall → Audit.</p>
+<h2>Rules as Loaded</h2>
+<p><strong>Rules as Loaded</strong> - shows the live rules FoilGateway has loaded.</p>
+<p><strong>Opening it:</strong> Firewall → Rules as Loaded.</p>
+<h2>Device Policies</h2>
+<p><strong>Device Policy</strong> - per-device setting on the device page.</p>
+<ul>
+<li><strong>Trusted</strong> - skips Blacklist, threat lists, and countries. Telemetry blocking can still apply. Local Network Only and Block Everything still apply at the network level.
+</li>
+<li><strong>Normal</strong> - follows the network Protection Mode, Hardening settings, Whitelist, Blacklist, threat lists, geo-blocking, and Ports.
+</li>
+<li><strong>Local Network Only</strong> - that device cannot reach the internet through the gateway.
+</li>
+<li><strong>Block All</strong> - that device is cut from traffic to and through the gateway.
+</li>
+</ul>
+<h2>DNS Proxy (Addon)</h2>
+<p>A DNS Proxy addon for FoilGateway Network is in development and will be available in the future.</p>
+<p><strong>Fits when</strong></p>
+<ul>
+<li>You have no DNS filter such as Pi-hole and want FoilGateway to own DNS filtering and learn which names devices look up.
+</li>
+<li>Clients resolve over HTTPS on port 443, so ordinary DNS on port 53 never shows those names to FoilGateway.
+</li>
+</ul>
+<p><strong>Already covered when</strong></p>
+<ul>
+<li>You already run a DNS filter such as Pi-hole.
+</li>
+<li>LAN↔WAN blocking alone is enough (threat lists, telemetry addresses, ports, geo, Strict Outbound).
+</li>
+</ul>
+</section><hr class="chap"><section id="ports"><h1>Ports</h1>
+<p>Copyright (C) 2026 iBGeek</p>
+<h2>What Ports Control</h2>
+<p><strong>Ports</strong> - whether the router side (WAN) may start connections into your devices on a TCP or UDP port, and whether your devices may start those ports toward the router side. Global settings win over a device&#x27;s own port overrides.</p>
+<p>In Normal and Audit, these choices apply. In Local Network Only or Block Everything, those modes block traffic to and through the gateway; the Ports page shows a notice.</p>
+<h2>Global and Per Device</h2>
+<ul>
+<li><strong>Global</strong> - one setting for every device on that port.
+</li>
+<li><strong>Per Device</strong> - every device listed; open a row for overrides. Filter All / With Own / Same as Global. Same as Global clears an override.
+</li>
+</ul>
+<p>Per-device choices: Same as Global, Allow, Block from WAN, Block from LAN, Block Both.</p>
+<h2>Choices</h2>
+<ul>
+<li><strong>Allow</strong> - the router side may start connections to your devices on that port.
+</li>
+<li><strong>Block from WAN</strong> - stop new attempts from the router side.
+</li>
+<li><strong>Block from LAN</strong> - stop your devices starting that port toward the router side.
+</li>
+<li><strong>Block Both</strong> - both directions for new connections on that port.
+</li>
+</ul>
+<p>Unset ports are treated as blocked from WAN until you set them.</p>
+<p><strong>Adding a port:</strong> Add a Port by Hand (protocol + number + choice). Custom ports can be removed.</p>
+<h2>WAN and LAN</h2>
+<p><strong>WAN</strong> - the port toward your router or modem. <strong>LAN</strong> - toward your switch, Wi-Fi, and devices. From the router side means something on the WAN side of FoilGateway trying to reach in.</p>
+<h2>Remote Desktop (TCP 3389)</h2>
+<p>Remote Desktop from outside starts blocked. Devices behind the LAN port can still use it. FortNox also blocks Remote Desktop on the LAN.</p>
+<p><strong>Opening it for one device:</strong> Ports, that device, set the port as needed.</p>
+<h2>Risky Ports and Alerts</h2>
+<p>Other ports show risk notes when known. When a new port shows up in traffic, the Dashboard can alert. Open Ports or the Troubleshooter from the alert.</p>
+<h2>Placement</h2>
+<p>Everything downstream of the LAN port (switches, Wi-Fi, and all devices behind FoilGateway) is protected. Anything upstream of the WAN port is not.</p>
+</section><hr class="chap"><section id="settings"><h1>Settings</h1>
+<p>Copyright (C) 2026 iBGeek</p>
+<p><strong>Settings</strong> - gateway configuration. Sub-topics, in order: Network &amp; Access, Certificates, Time and Location, Capture Log, Account, View, Setup, Updates, Help, About (always last).</p>
+<h2>Network &amp; Access</h2>
+<p><strong>Ports (WAN / LAN)</strong> - which interfaces are WAN and LAN. WAN is locked until you Unlock WAN (confirm; undo timer). SSH answers from both sides. Whether this settings page answers from the router side depends on Who Can Open This Page.</p>
+<p><strong>Gateway Address</strong> - DHCP from the router, or a fixed address with gateway and DNS. After a fixed-address change, open the new URL within the countdown and sign in to keep it.</p>
+<p><strong>Who Can Open This Page</strong></p>
+<ul>
+<li><strong>Anyone on the Home Network or the Router Side</strong> - default after the wizard.
+</li>
+<li><strong>Only Devices Behind the Gateway</strong> - the router side cannot see the sign-in page. SSH still answers both sides. Safety computers can open the settings pages and connect over SSH. Both require signing in.
+</li>
+</ul>
+<p><strong>Settings Port</strong> - HTTPS port for these pages. Kept open for Safety computers.</p>
+<p><strong>Safety</strong> - toggle Safety and edit always-allowed IPv4 hosts. Safety computers can open the settings pages and connect over SSH. Both require signing in.</p>
+<h2>Certificates</h2>
+<p>Download the gateway certificate authority and install it so browsers stop warning. Windows, macOS, iPhone/iPad, and Android steps are on the page. The certificate is generated on the gateway.</p>
+<h2>Time and Location</h2>
+<p>Clock display (12/24h, date formats) and the location database used for Geo-Blocking. Progress, retries, errors, and Try Now show if a download stalls.</p>
+<p>Also shows Device uptime and FoilGateway uptime.</p>
+<h2>Capture Log (settings)</h2>
+<p>Retention, a link into the full log, and download controls.</p>
+<h2>Account</h2>
+<p>Admins who may sign in. Sign out is top-right on every page.</p>
+<h2>View</h2>
+<p>Which Dashboard cards are on. The server stores choices by card id. Turning a card off stops measuring work only that card needs.</p>
+<h2>Setup</h2>
+<ul>
+<li><strong>Run Setup Again</strong> - type YES. Devices keep working until the last step; that step undoes itself if the browser loses the gateway. Admin accounts stay as they are.
+</li>
+<li>Restart FoilGateway.
+</li>
+<li>Download Backup, restore (summary, Cancel, Download Backup First).
+</li>
+<li>Roll Back to the previous release when one is kept.
+</li>
+</ul>
+<h2>Updates</h2>
+<p><strong>Updates</strong> - checks GitHub Releases for a newer FoilGateway Network build and installs it when you ask.</p>
+<ul>
+<li><strong>Current Version</strong> - the build running now.
+</li>
+<li><strong>Latest Version</strong> - the newest release on GitHub, with its date and release notes.
+</li>
+<li><strong>Last Checked</strong> - when FoilGateway last asked GitHub.
+</li>
+</ul>
+<p><strong>Buttons:</strong></p>
+<ul>
+<li><strong>Check Now</strong> - asks GitHub for the latest release right away. A daily check also runs in the background.
+</li>
+<li><strong>Install Update</strong> - downloads the matching binary and web package, checks SHA256SUMS, installs into the version slots, and restarts. Shown only when a newer release is available. A confirm lists the version change and that the gateway restarts.
+</li>
+<li><strong>Roll Back To Previous Version</strong> - puts back the version kept from the last update and restarts. Shown when a previous slot exists.
+</li>
+</ul>
+<p>If this page does not come back after Install Update, FoilGateway restores the previous version within the undo timer. Updates never install by themselves.</p>
+<p><strong>Opening it:</strong> Settings → Updates.</p>
+<h2>Help</h2>
+<p>Settings → Help. Tabbed categories matching this manual, search, Download Manual.</p>
+<h2>About</h2>
+<p>Settings → About (always last). Product name, version, OS, architecture, board when known, Software License text, Download Manual. <a href="https://github.com/iBgeek/FoilGateway-Network/discussions/1">Support</a>.</p>
+</section><hr class="chap"><section id="breaks"><h1>If Something Breaks</h1>
+<p>Copyright (C) 2026 iBGeek</p>
+<h2>If You Can&#x27;t Reach This Page</h2>
+<ol>
+<li><strong>Use a safety computer.</strong> The computer you added during setup can open this page (sign in as usual).</li>
+<li><strong>Wait about 3 minutes.</strong> A change that cuts you off undoes itself within the rollback timer if this browser cannot reach the gateway.</li>
+<li><strong>Log in over SSH, then run</strong> <code>foilgw rollback</code> for the last good settings, or <code>foilgw rollback-version</code> for the previous release.</li>
+<li><strong>Pulling the power is safe.</strong> Unplug the gateway, wait a few seconds, plug it back in. Settings stay; the running state restarts.</li>
+</ol>
+<h2>Something Stopped Working After a Block</h2>
+<ol>
+<li>Open Devices → Troubleshooter (or follow the alert).</li>
+<li>Read the likely-cause line. Use Allow for that site, address, or port if the device needs it.</li>
+<li>Check Firewall → Audit if you are still in Audit. Use Allow · Permanent for what should keep working.</li>
+<li>If you ticked a country, untick it or whitelist the site.</li>
+<li>Check Protection Mode. Local Network Only and Block Everything block traffic to and through the gateway.</li>
+<li>If you just applied FortNox, Strict Outbound or LAN Remote Desktop may be blocking the app. Use Devices → Troubleshooter, or Reset To Normal under Protection Levels.</li>
+</ol>
+<h2>Geo or List Download Stuck</h2>
+<p>On Settings → Time and Location (geo) or Firewall list panels: wait for the retry schedule, read the error, use Try Now. Lists download when you enable a feature that needs them.</p>
+<h2>Wrong Port Roles (WAN / LAN)</h2>
+<p>Unlock WAN only when you mean to move it. Confirm and watch the undo timer. If you lose the page, wait for rollback or use a Safety computer / SSH.</p>
+<h2>After a Restore or Roll Back</h2>
+<p>Download a backup before restore or version rollback when the dialog offers it. Restore shows a summary. Version rollback lists what you lose.</p>
+<h2>SSH Commands</h2>
+<ul>
+<li><code>foilgw rollback</code> - last good settings
+</li>
+<li><code>foilgw rollback-version</code> - previous release binary and web
+</li>
+<li><code>foilgw show</code> - current config summary
+</li>
+<li><code>foilgw apply</code> - apply rules / config
+</li>
+<li><code>foilgw version</code> - print version
+</li>
+</ul>
+<p>Exact flags follow <code>foilgw</code> usage on the box.</p>
+<h2>Still Stuck</h2>
+<p><a href="https://github.com/iBgeek/FoilGateway-Network/discussions/1">Support</a></p>
+</section><hr class="chap"><section id="limits"><h1>Limits</h1>
+<p>Copyright (C) 2026 iBGeek</p>
+<h2>Placement</h2>
+<p>Everything downstream of the LAN port (switches, Wi-Fi, and all devices behind FoilGateway) is protected by FoilGateway. Anything upstream of the WAN port is not.</p>
+<h2>Encrypted DNS on Port 443</h2>
+<p>When Threat Lists or Block Encrypted DNS (Port 853) are On, FoilGateway blocks encrypted DNS on port 853. Some apps still use encrypted DNS on port 443. FoilGateway often misses new names from those apps. Names already on your lists still become address blocks. IP, port, geo, and threat hardening still apply.</p>
+<p>See Protection → DNS Proxy (Addon).</p>
+<h2>Volume Detection</h2>
+<p>Blocked Today and Likely Attack compare block volume to what is usual for this hour. Deeper Detection (default Off) adds quieter pattern checks beyond volume spikes.</p>
+<h2>IPv6</h2>
+<p>Block IPv6 (Hardening) defaults to Off. Off allows IPv6 through the gateway with the same hardening that applies to IPv4. On blocks IPv6 through the gateway onto the LAN; neighbour discovery and DHCPv6 still work. Threat feeds include DROPv6. Safety hosts in this build are IPv4.</p>
+<h2>VPN Tunnels</h2>
+<p>Traffic inside a VPN tunnel cannot be read. Geo and threat lists apply to the tunnel endpoints you can see. Block VPN Ports (default Off) can stop common WireGuard / VPN ports.</p>
+<h2>Trusted Devices</h2>
+<p>Trusted skips Blacklist, threat lists, and countries. Telemetry blocking can still apply. Local Network Only and Block Everything still apply at the network level.</p>
+</section><hr class="chap"><section id="about"><h1>About</h1>
+<p>Copyright (C) 2026 iBGeek</p>
+<h2>Product</h2>
+<p><strong>FoilGateway Network</strong> by <strong>iBGeek</strong>. Version, OS, architecture, and board (when the box reports one) show on Settings → About.</p>
+<h2>Software License</h2>
+<pre class="help-pre"><code>FoilGateway Network
+Copyright (C) 2026 iBGeek
+
+Permission is granted to anyone to use, copy, modify, and share this
+software and its source, free of charge, for personal, educational, or
+other non-commercial purposes, subject to the conditions below.
+
+You may not sell this software, offer it as a paid product or paid
+hosted service, or use it as part of a commercial product or service,
+without a separate commercial license from iBGeek.
+
+You must keep this copyright notice and this permission notice in all
+copies and substantial portions of the software.
+
+THE SOFTWARE IS PROVIDED &quot;AS IS&quot;, WITHOUT WARRANTY OF ANY KIND, EXPRESS
+OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, AND
+NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE
+LIABLE FOR ANY CLAIM, DAMAGES, OR OTHER LIABILITY, WHETHER IN AN ACTION
+OF CONTRACT, TORT, OR OTHERWISE, ARISING FROM, OUT OF, OR IN CONNECTION
+WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+For commercial licensing, contact iBGeek.</code></pre>
+<h2>Support</h2>
+<p><a href="https://github.com/iBgeek/FoilGateway-Network/discussions/1">Support</a></p>
+<h2>Download Manual</h2>
+<p>Use Download Manual on Help or About for a standalone copy of this manual.</p>
+</section><hr class="chap"><section id="glossary"><h1>Glossary</h1>
+<p>Copyright (C) 2026 iBGeek</p>
+<ul>
+<li><strong>WAN</strong> - the port toward your router or modem.
+</li>
+<li><strong>LAN</strong> - the side toward your switch, Wi-Fi, and devices.
+</li>
+<li><strong>SSH</strong> - a way to log in to the gateway from a terminal.
+</li>
+<li><strong>MAC</strong> - a device&#x27;s hardware address on the network. Phones may randomize it.
+</li>
+<li><strong>CIDR</strong> - a way to write a range of addresses, like 10.0.0.0/8.
+</li>
+<li><strong>HTTPS</strong> - the encrypted web address for this settings page.
+</li>
+<li><strong>Bridge</strong> - FoilGateway passes traffic through; your router still hands out addresses.
+</li>
+<li><strong>Audit</strong> - lets traffic through and logs what would have been blocked. Safety rules still apply.
+</li>
+<li><strong>Normal</strong> - Protection Mode that applies the Normal protection level; also the name of that level (Threat Lists On, Block All Telemetry Off); also a device policy that follows network Hardening, lists, geo, and Ports.
+</li>
+<li><strong>FortNox</strong> - Protection Level with Block All Telemetry On, Strict Outbound On, and Remote Desktop blocked on the LAN.
+</li>
+<li><strong>Custom</strong> - Protection Level when a Hardening setting differs from Normal and FortNox.
+</li>
+<li><strong>Local Network Only</strong> - blocks traffic between the LAN and the internet.
+</li>
+<li><strong>Block Everything</strong> - blocks all traffic to and through the gateway. Safety computers can open the settings pages and connect over SSH. Both require signing in.
+</li>
+<li><strong>Trusted</strong> - device policy that skips Blacklist, threat lists, and countries.
+</li>
+<li><strong>Block All</strong> - device policy that cuts that device from traffic to and through the gateway.
+</li>
+<li><strong>Safety</strong> - computers that can open the settings pages and connect over SSH. Both require signing in.
+</li>
+<li><strong>Telemetry</strong> - usage and diagnostic data devices send to makers or third parties.
+</li>
+<li><strong>Threat Lists</strong> - downloaded bad-network and botnet lists (Spamhaus DROP / DROPv6, Feodo, and related feeds).
+</li>
+<li><strong>Geo-Blocking</strong> - stop traffic to and from ticked countries.
+</li>
+<li><strong>Whitelist</strong> - always allow listed hosts or nets.
+</li>
+<li><strong>Blacklist</strong> - always stop listed hosts or nets.
+</li>
+<li><strong>Strict Outbound</strong> - allow only new outbound that matches your rules.
+</li>
+<li><strong>Block IPv6</strong> - when On, no IPv6 passes the gateway onto the LAN; when Off, IPv6 is allowed with IPv4-matching hardening. Default Off.
+</li>
+<li><strong>DoT / DoH</strong> - DNS over TLS (853) / DNS over HTTPS (often 443).
+</li>
+<li><strong>Stronger Identity</strong> - remembers hostname and DHCP fingerprint hints when a phone rotates its MAC. Default Off.
+</li>
+<li><strong>Deeper Detection</strong> - quieter pattern checks beyond volume spikes. Default Off.
+</li>
+<li><strong>Likely Attack</strong> - Blocked Today subtitle when alarm volume is far above usual (<code>Likely attack · far above usual</code>).
+</li>
+<li><strong>Needs a Look</strong> - Capture Log filter for rows worth a glance.
+</li>
+<li><strong>Undo / Rollback Timer</strong> - if the browser loses the gateway after a risky change, the change undoes itself within the timer.
+</li>
+<li><strong>FoilGateway Network</strong> - this product.
+</li>
+<li><strong>iBGeek</strong> - copyright holder, Copyright (C) 2026.
+</li>
+</ul>
+</section></main></body></html>

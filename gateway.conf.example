@@ -1,0 +1,25 @@
+# FoilGateway network edition settings (/etc/foilgateway/gateway.conf)
+# The setup wizard writes this file. You only need it to set things up by hand.
+
+# Ports. More than one LAN port is fine: lan = eth0, eth1, eth3
+lan = eth3
+wan = eth2
+
+# Where the bridge sits: internet_switch or router_switch (not Router mode).
+placement = router_switch
+
+# Safety access. While on, these computers can always reach the gateway
+# and the internet, whatever the other rules say.
+safety = on
+safety_hosts = 10.10.10.42
+# IPv6 safety hosts are fine too: safety_hosts = 10.10.10.42, 2001:db8::1
+
+# HTTPS port for the settings page. Always kept open to the safety hosts.
+admin_port = 8443
+
+# Other ports on the gateway kept open to the safety hosts. SSH (22) and
+# admin_port are always in.
+safety_ports = 22
+
+# Seconds before an unconfirmed change is undone.
+rollback_secs = 180

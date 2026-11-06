@@ -1,0 +1,50 @@
+{
+  "copyright": "Copyright (C) 2026 iBGeek",
+  "chapters": [
+    {
+      "id": "getting-started",
+      "title": "Getting Started",
+      "file": "01-getting-started.md"
+    },
+    {
+      "id": "daily-use",
+      "title": "Daily Use",
+      "file": "02-daily-use.md"
+    },
+    {
+      "id": "protection",
+      "title": "Protection",
+      "file": "03-protection.md"
+    },
+    {
+      "id": "ports",
+      "title": "Ports",
+      "file": "04-ports.md"
+    },
+    {
+      "id": "settings",
+      "title": "Settings",
+      "file": "05-settings.md"
+    },
+    {
+      "id": "breaks",
+      "title": "If Something Breaks",
+      "file": "06-if-something-breaks.md"
+    },
+    {
+      "id": "limits",
+      "title": "Limits",
+      "file": "07-limits.md"
+    },
+    {
+      "id": "about",
+      "title": "About",
+      "file": "08-about.md"
+    },
+    {
+      "id": "glossary",
+      "title": "Glossary",
+      "file": "99-glossary.md"
+    }
+  ]
+}
