@@ -370,6 +370,145 @@ footer {
   .top-inner { padding: 10px 0; }
   section { padding: 28px 0; }
 }
+
+/* Clickable gallery / hero */
+.shot button.lb-open,
+.hero-shot button.lb-open {
+  display: block;
+  width: 100%;
+  padding: 0;
+  margin: 0;
+  border: 0;
+  background: transparent;
+  cursor: zoom-in;
+  text-align: left;
+  color: inherit;
+  font: inherit;
+}
+.shot button.lb-open:focus-visible,
+.hero-shot button.lb-open:focus-visible {
+  outline: 2px solid var(--blue);
+  outline-offset: 2px;
+}
+.shot button.lb-open img,
+.hero-shot button.lb-open img {
+  width: 100%;
+  display: block;
+  pointer-events: none;
+}
+
+/* Lightbox */
+.lb {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  background: rgba(2, 6, 12, 0.92);
+  backdrop-filter: blur(6px);
+}
+.lb.is-open { display: flex; }
+.lb[hidden] { display: none !important; }
+.lb-dialog {
+  position: relative;
+  max-width: min(1200px, 100%);
+  max-height: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  outline: none;
+}
+.lb-figure {
+  margin: 0;
+  max-width: 100%;
+  max-height: calc(100vh - 72px);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+.lb-figure img {
+  max-width: 100%;
+  max-height: calc(100vh - 96px);
+  width: auto;
+  height: auto;
+  object-fit: contain;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #071018;
+  box-shadow: 0 24px 60px rgba(0, 0, 0, .55);
+}
+.lb-caption {
+  margin: 0;
+  color: var(--dim);
+  font-size: 12px;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+  font-weight: 600;
+  text-align: center;
+}
+.lb-close,
+.lb-prev,
+.lb-next {
+  position: absolute;
+  border: 1px solid var(--btn-line);
+  background: var(--btn-bg);
+  color: var(--strong);
+  border-radius: 6px;
+  cursor: pointer;
+  font: 600 14px var(--font);
+  line-height: 1;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 2;
+}
+.lb-close {
+  top: 12px;
+  right: 12px;
+  width: 40px;
+  height: 40px;
+  font-size: 22px;
+  position: fixed;
+}
+.lb-close:hover,
+.lb-prev:hover,
+.lb-next:hover {
+  border-color: #38bdf8;
+}
+.lb-close:focus-visible,
+.lb-prev:focus-visible,
+.lb-next:focus-visible {
+  outline: 2px solid var(--blue);
+  outline-offset: 2px;
+}
+.lb-prev,
+.lb-next {
+  top: 50%;
+  transform: translateY(-50%);
+  width: 44px;
+  height: 44px;
+  font-size: 20px;
+  position: fixed;
+}
+.lb-prev { left: 12px; }
+.lb-next { right: 12px; }
+@media (max-width: 640px) {
+  .lb { padding: 10px; }
+  .lb-prev, .lb-next {
+    width: 40px;
+    height: 40px;
+    top: auto;
+    bottom: 16px;
+    transform: none;
+  }
+  .lb-prev { left: 16px; }
+  .lb-next { right: 16px; }
+  .lb-figure img { max-height: calc(100vh - 120px); }
+}
 </style>
 </head>
 <body>
@@ -402,7 +541,9 @@ footer {
       </div>
     </div>
     <figure class="hero-shot">
-      <img src="images/00-dashboard-map.gif" width="960" height="540" alt="Dashboard with live connection map">
+      <button type="button" class="lb-open" data-lb-src="images/00-dashboard-map.gif" data-lb-alt="Dashboard with live connection map" data-lb-caption="Dashboard with live connection map" aria-label="Enlarge dashboard with live connection map">
+        <img src="images/00-dashboard-map.gif" width="960" height="540" alt="Dashboard with live connection map">
+      </button>
     </figure>
   </div>
 
@@ -479,31 +620,45 @@ footer {
       <p class="lead">Dummy data for illustration.</p>
       <div class="gallery">
         <figure class="shot">
-          <img src="images/02-firewall-status.png" alt="Firewall Status">
+          <button type="button" class="lb-open" data-lb-src="images/02-firewall-status.png" data-lb-alt="Firewall Status" data-lb-caption="Firewall → Status" aria-label="Enlarge Firewall → Status">
+            <img src="images/02-firewall-status.png" alt="Firewall Status">
+          </button>
           <figcaption>Firewall → Status</figcaption>
         </figure>
         <figure class="shot">
-          <img src="images/03-protection-mode.png" alt="Protection Mode">
+          <button type="button" class="lb-open" data-lb-src="images/03-protection-mode.png" data-lb-alt="Protection Mode" data-lb-caption="Protection Mode" aria-label="Enlarge Protection Mode">
+            <img src="images/03-protection-mode.png" alt="Protection Mode">
+          </button>
           <figcaption>Protection Mode</figcaption>
         </figure>
         <figure class="shot">
-          <img src="images/04-devices.png" alt="Devices">
+          <button type="button" class="lb-open" data-lb-src="images/04-devices.png" data-lb-alt="Devices" data-lb-caption="Devices" aria-label="Enlarge Devices">
+            <img src="images/04-devices.png" alt="Devices">
+          </button>
           <figcaption>Devices</figcaption>
         </figure>
         <figure class="shot">
-          <img src="images/05-capture-log.png" alt="Capture Log">
+          <button type="button" class="lb-open" data-lb-src="images/05-capture-log.png" data-lb-alt="Capture Log" data-lb-caption="Capture Log" aria-label="Enlarge Capture Log">
+            <img src="images/05-capture-log.png" alt="Capture Log">
+          </button>
           <figcaption>Capture Log</figcaption>
         </figure>
         <figure class="shot">
-          <img src="images/06-settings-updates.png" alt="Settings Updates">
+          <button type="button" class="lb-open" data-lb-src="images/06-settings-updates.png" data-lb-alt="Settings Updates" data-lb-caption="Settings → Updates" aria-label="Enlarge Settings → Updates">
+            <img src="images/06-settings-updates.png" alt="Settings Updates">
+          </button>
           <figcaption>Settings → Updates</figcaption>
         </figure>
         <figure class="shot">
-          <img src="images/07-settings-about.png" alt="Settings About">
+          <button type="button" class="lb-open" data-lb-src="images/07-settings-about.png" data-lb-alt="Settings About" data-lb-caption="Settings → About" aria-label="Enlarge Settings → About">
+            <img src="images/07-settings-about.png" alt="Settings About">
+          </button>
           <figcaption>Settings → About</figcaption>
         </figure>
         <figure class="shot">
-          <img src="images/08-protection-preview.png" alt="Protection change preview">
+          <button type="button" class="lb-open" data-lb-src="images/08-protection-preview.png" data-lb-alt="Protection change preview" data-lb-caption="Protection change preview" aria-label="Enlarge Protection change preview">
+            <img src="images/08-protection-preview.png" alt="Protection change preview">
+          </button>
           <figcaption>Protection change preview</figcaption>
         </figure>
       </div>
@@ -538,6 +693,19 @@ footer {
   </div>
 </footer>
 
+
+<div class="lb" id="lightbox" hidden role="dialog" aria-modal="true" aria-label="Enlarged screenshot">
+  <button type="button" class="lb-close" id="lb-close" aria-label="Close">×</button>
+  <button type="button" class="lb-prev" id="lb-prev" aria-label="Previous image">‹</button>
+  <button type="button" class="lb-next" id="lb-next" aria-label="Next image">›</button>
+  <div class="lb-dialog" tabindex="-1">
+    <figure class="lb-figure">
+      <img id="lb-img" src="" alt="">
+      <figcaption class="lb-caption" id="lb-caption"></figcaption>
+    </figure>
+  </div>
+</div>
+
 <script>
 (function () {
   var btn = document.getElementById('copy-btn');
@@ -558,6 +726,100 @@ footer {
       window.prompt('Copy the install command', text);
     }
   });
+})();
+</script>
+<script>
+(function () {
+  var root = document.getElementById('lightbox');
+  if (!root) return;
+  var img = document.getElementById('lb-img');
+  var caption = document.getElementById('lb-caption');
+  var btnClose = document.getElementById('lb-close');
+  var btnPrev = document.getElementById('lb-prev');
+  var btnNext = document.getElementById('lb-next');
+  var triggers = Array.prototype.slice.call(document.querySelectorAll('.lb-open'));
+  var index = 0;
+  var lastFocus = null;
+  var touchX = null;
+
+  function items() {
+    return triggers.map(function (el) {
+      return {
+        src: el.getAttribute('data-lb-src'),
+        alt: el.getAttribute('data-lb-alt') || '',
+        caption: el.getAttribute('data-lb-caption') || ''
+      };
+    });
+  }
+
+  function show(i) {
+    var list = items();
+    if (!list.length) return;
+    index = (i + list.length) % list.length;
+    var it = list[index];
+    img.src = it.src;
+    img.alt = it.alt;
+    caption.textContent = it.caption;
+  }
+
+  function openAt(i, from) {
+    lastFocus = from || document.activeElement;
+    show(i);
+    root.hidden = false;
+    root.classList.add('is-open');
+    document.body.style.overflow = 'hidden';
+    btnClose.focus();
+  }
+
+  function close() {
+    if (root.hidden) return;
+    root.classList.remove('is-open');
+    root.hidden = true;
+    document.body.style.overflow = '';
+    img.removeAttribute('src');
+    if (lastFocus && lastFocus.focus) lastFocus.focus();
+  }
+
+  triggers.forEach(function (el, i) {
+    el.addEventListener('click', function () { openAt(i, el); });
+  });
+
+  btnClose.addEventListener('click', function (e) {
+    e.stopPropagation();
+    close();
+  });
+  btnPrev.addEventListener('click', function (e) {
+    e.stopPropagation();
+    show(index - 1);
+  });
+  btnNext.addEventListener('click', function (e) {
+    e.stopPropagation();
+    show(index + 1);
+  });
+
+  root.addEventListener('click', function (e) {
+    if (e.target === root) close();
+  });
+
+  document.addEventListener('keydown', function (e) {
+    if (root.hidden) return;
+    if (e.key === 'Escape') { e.preventDefault(); close(); }
+    else if (e.key === 'ArrowLeft') { e.preventDefault(); show(index - 1); }
+    else if (e.key === 'ArrowRight') { e.preventDefault(); show(index + 1); }
+  });
+
+  root.addEventListener('touchstart', function (e) {
+    if (!e.changedTouches || !e.changedTouches.length) return;
+    touchX = e.changedTouches[0].clientX;
+  }, { passive: true });
+  root.addEventListener('touchend', function (e) {
+    if (touchX == null || !e.changedTouches || !e.changedTouches.length) return;
+    var dx = e.changedTouches[0].clientX - touchX;
+    touchX = null;
+    if (Math.abs(dx) < 48) return;
+    if (dx > 0) show(index - 1);
+    else show(index + 1);
+  }, { passive: true });
 })();
 </script>
 </body>
