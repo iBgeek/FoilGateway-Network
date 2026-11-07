@@ -76,6 +76,9 @@ pub struct App {
     pub geo: RwLock<geo::Db>,
     pub pending: Mutex<Option<Pending>>,
     pub live: Mutex<Live>,
+    pub map_traffic: Mutex<crate::maptraffic::Tracker>,
+    pub speed_test: Arc<crate::speedtest::SpeedTest>,
+    pub detection: Mutex<crate::detection::Detector>,
     /// Host names devices gave in DHCP before we knew them, by MAC.
     pub heard: Mutex<HashMap<String, String>>,
     /// When we last asked the network for a device's name, by MAC.
@@ -95,10 +98,8 @@ pub struct App {
     geo_dirty: AtomicBool,
     geo_running: AtomicBool,
     pub geo_job: Mutex<GeoJob>,
-    /// Blocks from the last hour, for the troubleshooter and surge alerts.
+    /// Blocks from the last hour, for the troubleshooter.
     pub recent: Mutex<crate::recent::Recent>,
-    /// When each device last got a sudden-blocks alert.
-    surge_sent: Mutex<HashMap<String, i64>>,
     /// Names devices looked up (passive DNS) and owners of addresses.
     pub pdns: Mutex<crate::pdns::Pdns>,
     pub owners: crate::pdns::Owners,
@@ -161,6 +162,9 @@ impl App {
             geo: RwLock::new(geo::Db::open(std::path::Path::new(&format!("{dir}/geo")))),
             pending: Mutex::new(None),
             live: Mutex::new(Live::default()),
+            map_traffic: Mutex::new(Default::default()),
+            speed_test: Arc::new(Default::default()),
+            detection: Mutex::new(Default::default()),
             heard: Mutex::new(HashMap::new()),
             asked: Mutex::new(HashMap::new()),
             home: Mutex::new((None, 0)),
@@ -175,7 +179,6 @@ impl App {
             geo_job: Mutex::new(GeoJob::default()),
             restart: AtomicBool::new(false),
             recent: Mutex::new(Default::default()),
-            surge_sent: Mutex::new(HashMap::new()),
             pdns: Mutex::new(Default::default()),
             owners: Default::default(),
             dir,
@@ -270,6 +273,7 @@ impl App {
             block_vpn: p.block_vpn,
             block_dot: p.block_dot,
             dns_proxy: p.dns_proxy,
+            deep_detect: p.deep_detect,
             inbound: p
                 .inbound
                 .iter()
@@ -433,6 +437,7 @@ impl App {
             return Ok(0);
         };
         let text = rules::policy_ruleset(&c, &self.plan(&policy));
+        self.detection.lock().unwrap().invalidate();
         crate::apply_text(&c, &text, &last)?;
         *last = text;
         if addr_changed {
@@ -585,6 +590,7 @@ impl App {
     /// New addresses for the same choices: no owner change, so once the
     /// safety rules check out it is kept straight away.
     pub fn refresh_rules(&self) {
+        self.detection.lock().unwrap().invalidate();
         if self.pending.lock().unwrap().is_some() {
             return;
         }
@@ -605,6 +611,7 @@ impl App {
         if *last == text {
             return Ok(());
         }
+        self.detection.lock().unwrap().invalidate();
         crate::apply_text(&cfg, &text, &last).and_then(|_| crate::confirm())?;
         *last = text;
         Ok(())
@@ -953,6 +960,7 @@ impl App {
             a.poll_devices();
             a.poll_traffic();
             a.poll_inbound();
+            a.poll_detection();
             a.expire_audit();
             a.expire_allows();
             std::thread::sleep(Duration::from_secs(2));
@@ -1089,6 +1097,10 @@ impl App {
     }
 
     pub fn poll_traffic(&self) {
+        let map_counts = crate::maptraffic::counters();
+        let mut tracker=self.map_traffic.lock().unwrap();
+        match map_counts {Some(counters)=>tracker.sample(counters,Instant::now()),None=>tracker.invalidate()}
+        drop(tracker);
         let up = net::device_bytes("dev_up");
         let down = net::device_bytes("dev_down");
         let ports = self.cfg.read().unwrap().as_ref().map(|c| (c.wan.clone(), c.lan.clone()));
@@ -1203,60 +1215,36 @@ impl App {
         let text = if b.audit { format!("{label} {dir} {other}{place}: would be blocked ({reason}), let through by audit") } else { format!("{label} {dir} {other}{place}: {reason}") };
         let off = self.tz_offset();
         let domain = if mac.is_empty() { String::new() } else { self.domain_of(&mac, other) };
-        let meta = crate::caplog::Meta { reason: b.reason.clone(), remote: other.clone(), proto: b.proto.clone(), port: b.dport, dir: if outbound { "out" } else { "in" }.into(), domain };
+        let meta = crate::caplog::Meta { reason: b.reason.clone(), remote: other.clone(), proto: b.proto.clone(), port: b.dport, dir: if outbound { "out" } else { "in" }.into(), domain, outcome:if b.audit{"audit_allowed"}else{"dropped"}.into() };
         self.log.add_block(if b.audit { "audit" } else { "block" }, &mac, &text, at, off, &meta);
+        if !b.audit { self.log.handle_stopped_alerts(&mac,&meta); }
         self.recent.lock().unwrap().add(
             crate::recent::Key { mac: mac.clone(), reason: b.reason.clone(), remote: other.clone(), proto: b.proto.clone(), port: b.dport, outbound, audit: b.audit },
             at,
         );
-        if b.reason == "threat" {
-            if b.audit {
-                // Let through, so the owner needs to see it.
-                self.log.add("alert", &mac, &format!("{label} reached {dir} {other}, which is on a threat list. Audit is on, so it was let through."), at, off);
-            } else {
-                // Already stopped, so it shows as handled.
-                self.log.add("alert", &mac, &format!("{label} tried {dir} {other}, which is on a threat list. Blocked."), at, off);
-                self.log.handle_device_alerts_blocked(&mac);
-            }
+        if b.reason=="wan" && b.audit && !mac.is_empty() {
+            self.log.add_block("alert",&mac,&format!("{label} received a new router-side {0} {1} attempt from {other}. Audit is on, so it was let through.",b.proto,b.dport),at,off,&meta);
+        }
+        if b.reason == "threat" && b.audit {
+            self.log.add_block("alert", &mac, &format!("{label} reached {dir} {other}, which is on a threat list. Audit is on, so it was let through."), at, off, &meta);
         }
     }
 
-    /// Once a minute: a device that has been around for a day and now
-    /// suddenly gets blocked a lot gets one alert (at most one a day),
-    /// pointing at the troubleshooter.
-    pub fn check_surges(&self) {
-        let t = now();
-        // Fresh install: learn a baseline before calling anything a surge attack.
-        if self.policy.read().unwrap().alarm_quiet(t) {
-            let mut r = self.recent.lock().unwrap();
-            r.prune(t);
-            return;
-        }
-        let deep = self.policy.read().unwrap().deep_detect;
-        let surges = {
-            let mut r = self.recent.lock().unwrap();
-            r.prune(t);
-            // Wave Det: deeper detection uses a lower spike bar (still opt-in).
-            if deep { r.surges(t, 15, 5) } else { r.surges(t, 30, 10) }
-        };
-        let mut sent = self.surge_sent.lock().unwrap();
-        sent.retain(|_, at| t - *at < 86400);
-        for (mac, n, reason) in surges {
-            if sent.contains_key(&mac) {
-                continue;
-            }
-            let Some(d) = self.policy.read().unwrap().devices.get(&mac).cloned() else { continue };
-            if d.first_seen == 0 || t - d.first_seen < 86400 {
-                continue;
-            }
-            let why = rules::REASONS.iter().find(|r| r.0 == reason).map(|r| r.1).unwrap_or("blocked");
-            let label = Self::device_label(&d, &mac);
-            let text = format!("{label} worked before and is now being blocked a lot: {n} blocks in the last 10 minutes, mostly {why}.");
-            let meta = crate::caplog::Meta { reason: "surge".into(), ..Default::default() };
-            self.log.add_block("alert", &mac, &text, t, self.tz_offset(), &meta);
-            sent.insert(mac, t);
+    pub fn poll_detection(&self){
+        // Keep sampling and publication within one application rules epoch.
+        let _rules_epoch=self.applying.lock().unwrap();
+        let on=self.policy.read().unwrap().deep_detect;
+        let snapshot=if on{crate::detection::snapshot()}else{Ok(crate::detection::Snapshot{signals:vec![],generation:0})};
+        let (alerts,resolved)={let mut detector=self.detection.lock().unwrap();let alerts=detector.ingest(on,snapshot);(alerts,detector.take_resolved())};
+        if let Err(e)=self.log.resolve_tcp(&resolved){self.detection.lock().unwrap().storage_failed(e);return;}
+        for a in alerts{let label=self.policy.read().unwrap().devices.get(&a.mac).map(|d|Self::device_label(d,&a.mac)).unwrap_or(a.mac.clone());
+            let text=if a.reason=="port_sweep"{format!("{label}: {} distinct TCP destination ports {} {} in 60 seconds.",a.count,if a.outbound{"to"}else{"from"},a.remote)}else{format!("{label}: {} TCP attempts {} {} were refused or had no SYN-ACK within 10 seconds.",a.count,if a.outbound{"to"}else{"from"},a.remote)};
+            if let Err(e)=self.log.pattern(&a,now(),&text){self.detection.lock().unwrap().storage_failed(e);return;}
         }
     }
+
+    /// Keep raw blocked evidence, without alerting about traffic already stopped.
+    pub fn check_surges(&self) { self.recent.lock().unwrap().prune(now()); }
 
     /// Once a minute: forgets per-device numbers for devices that are
     /// gone from the list and from the kernel's counters.
@@ -1356,7 +1344,7 @@ impl App {
             let _ = p.save(&self.policy_path());
             let label = p.devices.get(mac).map(|d| Self::device_label(d, mac)).unwrap_or(mac.to_string());
             drop(p);
-            self.log.add("device", mac, &format!("{from} on the router side tried {proto} {port} on {label}. It's on the Ports list."), t, self.tz_offset());
+            self.log.add_block("device", mac, &format!("{from} on the router side tried {proto} {port} on {label}. It's on the Ports list."), t, self.tz_offset(), &crate::caplog::Meta{reason:"port_observed".into(),..Default::default()});
         }
     }
 

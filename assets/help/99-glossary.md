@@ -28,8 +28,6 @@ Copyright (C) 2026 iBGeek
 - **Block Encrypted DNS** - Hardening setting that stops DNS over TLS on port 853. Off by default and in Normal; On in FortNox. While On, devices set to require DNS over TLS cannot look up names.
 - **DoT / DoH** - DNS over TLS (853) / DNS over HTTPS (often 443).
 - **Stronger Identity** - remembers hostname and DHCP fingerprint hints when a phone rotates its MAC. Default Off.
-- **Deeper Detection** - quieter pattern checks beyond volume spikes. Default Off.
-- **Likely Attack** - Blocked Today subtitle when alarm volume is far above usual (`Likely attack · far above usual`).
 - **Needs a Look** - Capture Log filter for rows worth a glance.
 - **Undo / Rollback Timer** - if the browser loses the gateway after a risky change, the change undoes itself within the timer.
 - **FoilGateway Network** - this product.

@@ -74,7 +74,7 @@ When Threat Lists or Block Encrypted DNS (Port 853) are On, a notice about encry
 
 **Block IPv6** - controls IPv6 through the gateway onto the LAN. Default Off.
 
-- **On** - no IPv6 traffic passes the gateway onto the LAN. Neighbour discovery and DHCPv6 still work.
+- **On** - no IPv6 traffic is forwarded across the gateway, including neighbour discovery and DHCPv6. Neighbour discovery to the gateway itself still works for local management.
 - **Off** - IPv6 is allowed through the gateway with the same hardening that applies to IPv4.
 
 **Whitelist Expiry For Auto Allows** - time limit for Allows created from Audit or the Troubleshooter. Default Off.
@@ -88,9 +88,20 @@ When Threat Lists or Block Encrypted DNS (Port 853) are On, a notice about encry
 
 - **On** - those hints are used for returning devices.
 
-**Deeper Detection** - quieter pattern checks beyond volume spikes, including odd port sweeps and repeated soft fails. Default Off.
+**Deeper Detection** - looks for port sweeps and repeated TCP connection failures in traffic passing through the gateway. Default Off.
 
-- **On** - those checks run and can raise more alerts.
+- **On** - checks forwarded TCP connections for port sweeps and repeated connection failures.
+- **Off** - stops new checks and clears pending attempts. Capture Log history stays.
+
+A port sweep is twelve different ports tried on one remote address within sixty seconds. Repeated connection failures are eight refused or unanswered attempts to one service within sixty seconds. An unanswered attempt has had no observed connection reply for ten seconds while observation is healthy. Retransmissions count as the same attempt.
+
+Already blocked traffic and traffic covered by an Allow, Trusted, Whitelist, infrastructure or open-port rule are excluded. Traffic allowed by Audit is still checked.
+
+**Observation** - the current state, shown below the switch. Watching means observation is active. A degraded or unavailable state includes a message about the problem. Interrupted observation clears pending checks.
+
+New warnings for the same subject have a five-minute cooldown. A later successful reply resolves the matching failed attempt. Alerts show the attempts still needing attention; Capture Log keeps the original record.
+
+**Using it:** Firewall → Hardening, Deeper Detection. Default Off.
 
 **New Devices** - what a device gets the first time its MAC shows up. The device is flagged as new either way.
 

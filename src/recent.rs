@@ -1,6 +1,6 @@
 //! Blocks from the last hour or so, kept in memory per device, address,
 //! port and reason with a count per minute. The troubleshooter reads it,
-//! and it spots a device that suddenly gets blocked a lot. Bounded: lines
+//! and the blocked-attempts map reads actual stopped records. Bounded: lines
 //! older than 70 minutes go, and there's a cap on how many it holds.
 
 use std::collections::{HashMap, VecDeque};
@@ -58,16 +58,8 @@ pub struct Merged {
     pub audit: bool,
 }
 
-/// Reasons that say something changed for a device that used to work. The
-/// owner's own switches (modes, Block all, LAN only) and the router side
-/// knocking on ports don't count.
-pub const SURGE_REASONS: &[&str] = &["devdeny", "black", "threat", "country", "lanport"];
-
 impl Recent {
     pub fn add(&mut self, key: Key, at: i64) {
-        if key.mac.is_empty() {
-            return;
-        }
         let minute = at.div_euclid(60);
         let h = self.map.entry(key).or_default();
         match h.mins.back_mut() {
@@ -106,6 +98,11 @@ impl Recent {
         self.map.len()
     }
 
+    /// Only actual drops, never Audit-allowed packets. Counts are minute buckets.
+    pub fn stopped_since(&self, since: i64) -> Vec<Line> {
+        self.map.iter().filter(|(k,h)| !k.audit && h.last >= since).map(|(k,h)| Line {key:k.clone(),count:h.count_since(since.div_euclid(60)),last:h.last}).collect()
+    }
+
     /// One device's lines since `since`, busiest first.
     pub fn for_device(&self, mac: &str, since: i64) -> Vec<Line> {
         let minute = since.div_euclid(60);
@@ -120,18 +117,17 @@ impl Recent {
         out
     }
 
-    /// One device's lines for one reason, one per address: every port
+    /// One device's lines for one reason, one per address and outcome: every port
     /// on it merged and listed (busiest first), the count the total.
     pub fn by_address(lines: &[Line], reason: &str) -> Vec<Merged> {
         // Per address: the row, outbound hits, and hits per port.
         type Acc = (Merged, u64, Vec<(String, u16, u64)>);
-        let mut per: HashMap<&str, Acc> = HashMap::new();
+        let mut per: HashMap<(&str,bool), Acc> = HashMap::new();
         for l in lines.iter().filter(|l| l.key.reason == reason) {
             let k = &l.key;
-            let e = per.entry(&k.remote).or_insert_with(|| (Merged { remote: k.remote.clone(), ..Default::default() }, 0, Vec::new()));
+            let e = per.entry((&k.remote,k.audit)).or_insert_with(|| (Merged { remote: k.remote.clone(), audit:k.audit, ..Default::default() }, 0, Vec::new()));
             e.0.count += l.count;
             e.0.last = e.0.last.max(l.last);
-            e.0.audit |= k.audit;
             if k.outbound {
                 e.1 += l.count;
             }
@@ -150,41 +146,11 @@ impl Recent {
                 m
             })
             .collect();
-        out.sort_by(|a, b| b.count.cmp(&a.count).then(b.last.cmp(&a.last)).then(a.remote.cmp(&b.remote)));
+        out.sort_by(|a, b| b.count.cmp(&a.count).then(b.last.cmp(&a.last)).then(a.remote.cmp(&b.remote)).then(a.audit.cmp(&b.audit)));
         out
     }
 
-    /// Devices blocked at least `min_now` times in the last 10 minutes
-    /// after fewer than `max_before` in the hour before that, with the
-    /// count and the reason seen most.
-    pub fn surges(&self, at: i64, min_now: u64, max_before: u64) -> Vec<(String, u64, String)> {
-        let minute = at.div_euclid(60);
-        let mut per: HashMap<&str, (u64, u64, HashMap<&str, u64>)> = HashMap::new();
-        for (k, h) in &self.map {
-            if k.audit || !SURGE_REASONS.contains(&k.reason.as_str()) {
-                continue;
-            }
-            let e = per.entry(&k.mac).or_default();
-            for (m, n) in &h.mins {
-                if *m > minute - 10 {
-                    e.0 += *n as u64;
-                    *e.2.entry(&k.reason).or_default() += *n as u64;
-                } else if *m > minute - 70 {
-                    e.1 += *n as u64;
-                }
-            }
-        }
-        let mut out: Vec<(String, u64, String)> = per
-            .into_iter()
-            .filter(|(_, (now, before, _))| *now >= min_now && *before < max_before)
-            .map(|(mac, (now, _, reasons))| {
-                let top = reasons.into_iter().max_by(|a, b| a.1.cmp(&b.1).then(b.0.cmp(a.0))).map(|r| r.0.to_string()).unwrap_or_default();
-                (mac.to_string(), now, top)
-            })
-            .collect();
-        out.sort();
-        out
-    }
+
 }
 
 #[cfg(test)]
@@ -195,6 +161,18 @@ mod tests {
         Key { mac: mac.into(), reason: reason.into(), remote: remote.into(), proto: "tcp".into(), port: 443, outbound: true, audit: false }
     }
 
+    #[test]
+    fn stopped_and_audit_at_one_address_are_not_merged_or_mislabelled() {
+        let mut r=Recent::default();let k=Key{mac:"a".into(),remote:"8.8.8.8".into(),reason:"country".into(),proto:"tcp".into(),port:443,outbound:true,audit:false};
+        r.add(k.clone(),100);r.add(k.clone(),101);r.add(Key{audit:true,..k},102);
+        let rows=Recent::by_address(&r.for_device("a",0),"country");assert_eq!(rows.len(),2);assert_eq!(rows.iter().find(|r|!r.audit).unwrap().count,2);assert_eq!(rows.iter().find(|r|r.audit).unwrap().count,1);
+    }
+    #[test]
+    fn map_selection_is_recent_actual_drops_including_unidentified_devices() {
+        let mut r=Recent::default();let key=Key{mac:"".into(),reason:"country".into(),remote:"8.8.8.8".into(),proto:"tcp".into(),port:443,outbound:true,audit:false};
+        r.add(key.clone(),100);r.add(Key{audit:true,..key.clone()},110);r.add(Key{remote:"1.1.1.1".into(),..key},10);
+        let actual=r.stopped_since(60);assert_eq!(actual.len(),1);assert!(!actual[0].key.audit);assert_eq!(actual[0].key.remote,"8.8.8.8");
+    }
     #[test]
     fn counts_the_last_hour_and_forgets_older() {
         let mut r = Recent::default();
@@ -244,32 +222,5 @@ mod tests {
         assert!(r.len() <= CAP);
     }
 
-    #[test]
-    fn spots_a_sudden_rise() {
-        let mut r = Recent::default();
-        let t = 2_000_000 * 60;
-        for i in 0..40 {
-            r.add(key("cam", "country", "3.3.3.3"), t - i * 10);
-        }
-        // Quiet before, then a burst: a surge.
-        assert_eq!(r.surges(t, 30, 10), vec![("cam".to_string(), 40, "country".to_string())]);
-        // Busy before as well: nothing new.
-        for i in 0..20 {
-            r.add(key("cam", "country", "3.3.3.3"), t - 30 * 60 - i);
-        }
-        assert!(r.surges(t, 30, 10).is_empty());
-        // Audit lines and the owner's own switches don't count.
-        let mut r = Recent::default();
-        for i in 0..40 {
-            r.add(Key { audit: true, ..key("tv", "black", "4.4.4.4") }, t - i);
-            r.add(key("tv", "devblock", "4.4.4.4"), t - i);
-        }
-        assert!(r.surges(t, 30, 10).is_empty());
-        // Telemetry retry storms are expected noise, not a surge.
-        let mut r = Recent::default();
-        for i in 0..40 {
-            r.add(key("pc", "telemetry", "51.132.193.107"), t - i);
-        }
-        assert!(r.surges(t, 30, 10).is_empty());
-    }
+
 }

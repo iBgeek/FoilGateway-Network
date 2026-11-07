@@ -379,7 +379,7 @@ pub fn coach_questions(pol: &Policy, admin_from_wan: bool) -> Vec<CoachQuestion>
         CoachQuestion {
             id: "need_ipv6".into(),
             text: "Do you need IPv6 on this network?".into(),
-            explain: "IPv6 is a second kind of internet address beside ordinary IPv4. Many home ISPs and gadgets never use it. With Block IPv6 Off, IPv6 may pass the gateway onto the LAN and is hardened like IPv4. With Block IPv6 On, no IPv6 traffic passes the gateway onto the LAN (neighbour discovery still works). Say Yes if your ISP handed you IPv6, or a device needs it. Say No if you want Block IPv6 On — you still choose Apply at the end.".into(),
+            explain: "IPv6 is a second kind of internet address beside ordinary IPv4. Many home ISPs and gadgets never use it. With Block IPv6 Off, IPv6 may pass the gateway onto the LAN and is hardened like IPv4. With Block IPv6 On, no IPv6 traffic passes the gateway onto the LAN (local neighbour discovery to the gateway itself still works). Say Yes if your ISP handed you IPv6, or a device needs it. Say No if you want Block IPv6 On — you still choose Apply at the end.".into(),
             yesno: true,
             default_yes: Some(true),
             skip: pol.block_ipv6,
@@ -517,17 +517,7 @@ pub fn coach_suggestions(pol: &Policy, admin_from_wan: bool, answers: &serde_jso
             placement_block: None,
         });
     }
-    // Wave Det — deeper detection (opt-in).
-    if !pol.deep_detect {
-        out.push(Suggestion {
-            id: "deep_detect".into(),
-            title: "Turn On Deeper Detection".into(),
-            why: "Adds quieter pattern checks beyond volume spikes (odd port sweeps, repeated soft fails). Can raise more alerts. Default Off — Apply only if you want a sharper eye.".into(),
-            patch: serde_json::json!({ "deep_detect": true }),
-            risky: false,
-            placement_block: None,
-        });
-    }
+    if !pol.deep_detect {out.push(Suggestion{id:"deep_detect".into(),title:"Turn On Deeper Detection".into(),why:"Checks unhandled forwarded TCP traffic for port sweeps and repeated connection failures. Default Off.".into(),patch:serde_json::json!({"deep_detect":true}),risky:false,placement_block:None});}
     out
 }
 
@@ -535,6 +525,10 @@ pub fn coach_suggestions(pol: &Policy, admin_from_wan: bool, answers: &serde_jso
 mod tests {
     use super::*;
 
+    #[test]
+    fn coach_does_not_offer_a_retired_blocked_volume_detector() {
+        let mut pol=Policy::default();pol.deep_detect=true;assert!(!coach_suggestions(&pol,false,&serde_json::json!({})).iter().any(|s|s.id=="deep_detect"));
+    }
     #[test]
     fn labels_match_ui() {
         assert_eq!(Preset::Normal.label(), "Normal");
@@ -669,3 +663,5 @@ mod tests {
         assert!(sug2.iter().all(|s| s.id != "strict"), "already FortNox");
     }
 }
+
+#[cfg(test)]mod detection_repair_tests {use super::*;#[test]fn detection_repair_coach_restores_existing_action(){let p=Policy::default();assert!(coach_suggestions(&p,false,&serde_json::json!({})).iter().any(|s|s.id=="deep_detect"));}}

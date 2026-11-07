@@ -351,7 +351,7 @@ pub fn parse_conntrack(line: &str) -> Option<Conn> {
 
 /// Bridged traffic only reaches the rules with br_netfilter on.
 pub fn bridge_filtering() -> bool {
-    sys("/proc/sys/net/bridge/bridge-nf-call-iptables") == "1"
+    sys("/proc/sys/net/bridge/bridge-nf-call-iptables") == "1" && sys("/proc/sys/net/bridge/bridge-nf-call-ip6tables") == "1"
 }
 
 /// Nameservers in resolv.conf, for when DHCP didn't name any.

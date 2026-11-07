@@ -58,26 +58,37 @@ Copyright (C) 2026 iBGeek
 - **Mode** - current Protection Mode, and whether telemetry is blocked network-wide.
 - **Traffic Path** - In path or Not in path, and whether filtering is on.
 - **WAN Speed** / **LAN Speed** - in and out rates, two lines each.
-- **Countries Now** - countries with live connections. Click for the country names.
+- **Countries Now** - countries with fresh forwarded traffic. Click for the country names.
 - **Devices Online** - count of devices seen recently.
 - **CPU Load**, **CPU Temperature** (caption only when hot), **Disk**, **Memory**
-- **Blocked Today** - block count for today, with a subtitle that compares volume to what is usual for this hour.
+- **Blocked Today** - block count for today. Click to open the log.
 
-Below the cards: the live map (arcs, home ring, Pause Motion / Play Motion) and the open connections table. Alerts cover new devices, new ports, and suspicious activity.
+Below the cards are the map and the connections table. Connections are observed tracking entries; a listed connection alone does not prove that packets are still passing.
+
+### Map
+
+**Map** - shows traffic and stopped connection attempts by location.
+
+- **Traffic Only** - shows traffic currently passing through the gateway. Selected when you open the Dashboard.
+- **Blocked Connection Attempts** - shows recently logged stopped attempts. Counts cover roughly the last minute.
+
+Only one mode is On. Hover over a location for devices, destinations and direction. Traffic counts show active device/address paths.
+
+**Buttons:**
+
+- **Pause Motion** - stops the map animation.
+- **Play Motion** - starts the map animation.
+- **Full Screen** - expands the map. Press Escape to leave full screen.
+
+**Using it:** Open Dashboard and choose a map mode. Traffic updates every few seconds. Quiet paths disappear as samples refresh. Public addresses with a known location appear on the map. Device uptime and FoilGateway uptime stay in the sidebar.
+
+### Alerts
+
+Alerts show things that still need attention, such as a new device, an allowed threat-list match in Audit, or a filtering failure. Already stopped traffic does not create a suspicious, new-port or volume-spike warning. Resolved warnings leave Alerts and Needs a Look. Raw history remains under Capture Log → All, and stopped attempts remain under Blocked. Old port observations without an outcome stay unclassified unless matching inbound drop evidence or a handled decision is available; they are not assumed stopped.
 
 ### Blocked Today
 
-The number is today's full block count. The subtitle compares a quieter alarm count to what is usual for this hour. Blocks from Block All Telemetry, Local Network Only, and Block All are left out of that comparison.
-
-Subtitles:
-
-- **Likely attack · far above usual**
-- **Higher than usual**
-- **Usual for this hour**
-- **Open the log**
-- **Learning usual · first week** (first roughly six days after a fresh install)
-
-**Opening today's blocks:** click Blocked Today. The Capture Log opens filtered to today's blocks.
+The number is today's full logged block count. It does not turn high block volume into an attack warning. Click it to open today's blocked rows in the Capture Log.
 
 ## Devices
 
@@ -98,7 +109,13 @@ Open a device for:
 
 **Devices → Troubleshooter** - shows why a device's traffic is being blocked and lets you allow it.
 
-Pick a device (or arrive from an alert). The page shows status notes, a likely-cause strip when one is known (reason, remote, protocol, port), Allow actions beside that line, and recent blocked / audit context for that device. Blocked apps can be allowed from here.
+Pick a device, then choose a filter beside the device picker:
+
+- **All attempts** - shows stopped attempts and traffic allowed during Audit.
+- **Stopped only** - shows traffic FoilGateway blocked.
+- **Audit allowed only** - shows traffic that Audit let through and would otherwise have blocked.
+
+The page shows status notes, a likely-cause strip when one is known, and Allow actions beside that line. Stopped and Audit-allowed attempts stay on separate lines, even for the same address. Blocked apps can be allowed from here.
 
 ## Capture Log
 
@@ -185,7 +202,7 @@ When Threat Lists or Block Encrypted DNS (Port 853) are On, a notice about encry
 
 **Block IPv6** - controls IPv6 through the gateway onto the LAN. Default Off.
 
-- **On** - no IPv6 traffic passes the gateway onto the LAN. Neighbour discovery and DHCPv6 still work.
+- **On** - no IPv6 traffic is forwarded across the gateway, including neighbour discovery and DHCPv6. Neighbour discovery to the gateway itself still works for local management.
 - **Off** - IPv6 is allowed through the gateway with the same hardening that applies to IPv4.
 
 **Whitelist Expiry For Auto Allows** - time limit for Allows created from Audit or the Troubleshooter. Default Off.
@@ -199,9 +216,20 @@ When Threat Lists or Block Encrypted DNS (Port 853) are On, a notice about encry
 
 - **On** - those hints are used for returning devices.
 
-**Deeper Detection** - quieter pattern checks beyond volume spikes, including odd port sweeps and repeated soft fails. Default Off.
+**Deeper Detection** - looks for port sweeps and repeated TCP connection failures in traffic passing through the gateway. Default Off.
 
-- **On** - those checks run and can raise more alerts.
+- **On** - checks forwarded TCP connections for port sweeps and repeated connection failures.
+- **Off** - stops new checks and clears pending attempts. Capture Log history stays.
+
+A port sweep is twelve different ports tried on one remote address within sixty seconds. Repeated connection failures are eight refused or unanswered attempts to one service within sixty seconds. An unanswered attempt has had no observed connection reply for ten seconds while observation is healthy. Retransmissions count as the same attempt.
+
+Already blocked traffic and traffic covered by an Allow, Trusted, Whitelist, infrastructure or open-port rule are excluded. Traffic allowed by Audit is still checked.
+
+**Observation** - the current state, shown below the switch. Watching means observation is active. A degraded or unavailable state includes a message about the problem. Interrupted observation clears pending checks.
+
+New warnings for the same subject have a five-minute cooldown. A later successful reply resolves the matching failed attempt. Alerts show the attempts still needing attention; Capture Log keeps the original record.
+
+**Using it:** Firewall → Hardening, Deeper Detection. Default Off.
 
 **New Devices** - what a device gets the first time its MAC shows up. The device is flagged as new either way.
 
@@ -327,6 +355,26 @@ Copyright (C) 2026 iBGeek
 **Ports (WAN / LAN)** - which interfaces are WAN and LAN. WAN is locked until you Unlock WAN (confirm; undo timer). SSH answers from both sides. Whether this settings page answers from the router side depends on Who Can Open This Page.
 
 **Gateway Address** - DHCP from the router, or a fixed address with gateway and DNS. After a fixed-address change, open the new URL within the countdown and sign in to keep it.
+
+**Internet speed test** - measures the gateway's internet download speed, upload speed and HTTP latency using Cloudflare.
+
+The panel shows:
+
+- **Download** and **Upload** - measured speed in Mbps.
+- **HTTP latency** - the median time for an HTTPS request, in milliseconds.
+- **Progress** and **elapsed time** - the current test stage and time spent running.
+- **Last result** - the most recent completed test and its time. Kept until FoilGateway restarts.
+
+**Buttons:**
+
+- **Run speed test** - starts a test. Admin access is required.
+- **Cancel** - stops the test. Wait for cleanup to finish before starting another.
+
+A test can transfer up to 64 MiB down and 16 MiB up, plus protocol overhead, and may slow other traffic. It has a forty-second overall limit. If a test fails or is cancelled, the earlier completed result stays.
+
+The gateway uses HTTPS certificate checks. Cloudflare receives its public address and measurement requests. Results estimate the gateway's connection to Cloudflare.
+
+**Using it:** Settings → Network & Access, below Gateway Address.
 
 **Who Can Open This Page**
 
@@ -454,13 +502,21 @@ When Block Encrypted DNS (Port 853) is On, FoilGateway blocks DNS over TLS on po
 
 See Protection → DNS Proxy (Addon).
 
-## Volume Detection
+## Stopped Traffic and Alerts
 
-Blocked Today and Likely Attack compare block volume to what is usual for this hour. Deeper Detection (default Off) adds quieter pattern checks beyond volume spikes.
+Blocks remain in the Capture Log and the explicit blocked-attempts view. They do not create attack-volume warnings or alerts about traffic the gateway already stopped. Audit is different: it allows the traffic, so an unhandled warning can still appear.
+
+## Country Blocks
+
+Country matches use the installed address database, for both IPv4 and IPv6, in both directions. An unknown or missing country range cannot be matched. A location describes the public endpoint address, not necessarily the service or person's physical location.
+
+DHCP and, when IPv6 is enabled, neighbour-discovery bootstrap exceptions precede country checks. Audit, Trusted devices, device Allow entries and Whitelist entries keep their existing precedence. Explicit router-side open ports also accept new incoming traffic before country checks; an incoming UDP packet can therefore pass from a selected country on an opened port. Selecting a country is therefore not an unconditional deny on an explicitly opened port. These exceptions are unchanged. Non-exempt tracked sessions are rechecked after a country policy or list generation changes.
+
+Use the forwarded map to see recent accepted activity and the stopped-attempts mode or raw log to see drops. A stale connection-tracking entry alone is not evidence that a country rule failed.
 
 ## IPv6
 
-Block IPv6 (Hardening) defaults to Off. Off allows IPv6 through the gateway with the same hardening that applies to IPv4. On blocks IPv6 through the gateway onto the LAN; neighbour discovery and DHCPv6 still work. Threat feeds include DROPv6. Safety hosts in this build are IPv4.
+Block IPv6 (Hardening) defaults to Off. Off allows IPv6 through the gateway with the same hardening that applies to IPv4. On blocks all IPv6 forwarding across the gateway, including neighbour discovery and DHCPv6. Neighbour discovery to the gateway itself still works for local management. Threat feeds include DROPv6. Safety hosts in this build are IPv4.
 
 ## VPN Tunnels
 
@@ -546,8 +602,6 @@ Copyright (C) 2026 iBGeek
 - **Block Encrypted DNS** - Hardening setting that stops DNS over TLS on port 853. Off by default and in Normal; On in FortNox. While On, devices set to require DNS over TLS cannot look up names.
 - **DoT / DoH** - DNS over TLS (853) / DNS over HTTPS (often 443).
 - **Stronger Identity** - remembers hostname and DHCP fingerprint hints when a phone rotates its MAC. Default Off.
-- **Deeper Detection** - quieter pattern checks beyond volume spikes. Default Off.
-- **Likely Attack** - Blocked Today subtitle when alarm volume is far above usual (`Likely attack · far above usual`).
 - **Needs a Look** - Capture Log filter for rows worth a glance.
 - **Undo / Rollback Timer** - if the browser loses the gateway after a risky change, the change undoes itself within the timer.
 - **FoilGateway Network** - this product.

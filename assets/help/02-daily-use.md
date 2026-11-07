@@ -9,26 +9,37 @@ Copyright (C) 2026 iBGeek
 - **Mode** - current Protection Mode, and whether telemetry is blocked network-wide.
 - **Traffic Path** - In path or Not in path, and whether filtering is on.
 - **WAN Speed** / **LAN Speed** - in and out rates, two lines each.
-- **Countries Now** - countries with live connections. Click for the country names.
+- **Countries Now** - countries with fresh forwarded traffic. Click for the country names.
 - **Devices Online** - count of devices seen recently.
 - **CPU Load**, **CPU Temperature** (caption only when hot), **Disk**, **Memory**
-- **Blocked Today** - block count for today, with a subtitle that compares volume to what is usual for this hour.
+- **Blocked Today** - block count for today. Click to open the log.
 
-Below the cards: the live map (arcs, home ring, Pause Motion / Play Motion) and the open connections table. Alerts cover new devices, new ports, and suspicious activity.
+Below the cards are the map and the connections table. Connections are observed tracking entries; a listed connection alone does not prove that packets are still passing.
+
+### Map
+
+**Map** - shows traffic and stopped connection attempts by location.
+
+- **Traffic Only** - shows traffic currently passing through the gateway. Selected when you open the Dashboard.
+- **Blocked Connection Attempts** - shows recently logged stopped attempts. Counts cover roughly the last minute.
+
+Only one mode is On. Hover over a location for devices, destinations and direction. Traffic counts show active device/address paths.
+
+**Buttons:**
+
+- **Pause Motion** - stops the map animation.
+- **Play Motion** - starts the map animation.
+- **Full Screen** - expands the map. Press Escape to leave full screen.
+
+**Using it:** Open Dashboard and choose a map mode. Traffic updates every few seconds. Quiet paths disappear as samples refresh. Public addresses with a known location appear on the map. Device uptime and FoilGateway uptime stay in the sidebar.
+
+### Alerts
+
+Alerts show things that still need attention, such as a new device, an allowed threat-list match in Audit, or a filtering failure. Already stopped traffic does not create a suspicious, new-port or volume-spike warning. Resolved warnings leave Alerts and Needs a Look. Raw history remains under Capture Log → All, and stopped attempts remain under Blocked. Old port observations without an outcome stay unclassified unless matching inbound drop evidence or a handled decision is available; they are not assumed stopped.
 
 ### Blocked Today
 
-The number is today's full block count. The subtitle compares a quieter alarm count to what is usual for this hour. Blocks from Block All Telemetry, Local Network Only, and Block All are left out of that comparison.
-
-Subtitles:
-
-- **Likely attack · far above usual**
-- **Higher than usual**
-- **Usual for this hour**
-- **Open the log**
-- **Learning usual · first week** (first roughly six days after a fresh install)
-
-**Opening today's blocks:** click Blocked Today. The Capture Log opens filtered to today's blocks.
+The number is today's full logged block count. It does not turn high block volume into an attack warning. Click it to open today's blocked rows in the Capture Log.
 
 ## Devices
 
@@ -49,7 +60,13 @@ Open a device for:
 
 **Devices → Troubleshooter** - shows why a device's traffic is being blocked and lets you allow it.
 
-Pick a device (or arrive from an alert). The page shows status notes, a likely-cause strip when one is known (reason, remote, protocol, port), Allow actions beside that line, and recent blocked / audit context for that device. Blocked apps can be allowed from here.
+Pick a device, then choose a filter beside the device picker:
+
+- **All attempts** - shows stopped attempts and traffic allowed during Audit.
+- **Stopped only** - shows traffic FoilGateway blocked.
+- **Audit allowed only** - shows traffic that Audit let through and would otherwise have blocked.
+
+The page shows status notes, a likely-cause strip when one is known, and Allow actions beside that line. Stopped and Audit-allowed attempts stay on separate lines, even for the same address. Blocked apps can be allowed from here.
 
 ## Capture Log
 

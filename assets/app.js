@@ -522,13 +522,13 @@
     if (body.mode === "lan_only") return { title: "Local Network Only Is On", text: "Traffic between the LAN and the internet through the gateway is blocked. Devices can still reach FoilGateway. Turn this off from Firewall → Protection Mode when you are ready." };
     if (body.strict_outbound === true) return { title: "Strict Outbound Is On", text: "Only new outbound that matches your rules gets through. Odd apps may need Allow. Turn it off under Firewall → Hardening if something breaks." };
     if (body.block_vpn === true) return { title: "VPN Ports Are Blocked", text: "Common VPN / WireGuard ports are stopped. VPN apps on phones or PCs will fail until you turn this off under Firewall → Hardening." };
-    if (body.block_ipv6 === true) return { title: "Block IPv6 Is On", text: "No IPv6 traffic passes the gateway onto the LAN (neighbour discovery still works). Turn it off under Firewall → Hardening if a device needs IPv6." };
+    if (body.block_ipv6 === true) return { title: "Block IPv6 Is On", text: "IPv6 forwarding is blocked across the gateway, including discovery and DHCPv6. Local discovery to the gateway itself still works. Turn it off under Firewall → Hardening if a device needs IPv6." };
     if (body.admin_from === "lan") return { title: "Settings: Local Network Only", text: "This page now answers only from devices behind the gateway. The router / internet side can no longer open it." };
     // Best Practices Accept of a disruptive tip.
     if (body.accept === "strict") return { title: "FortNox Applied", text: "Block All Telemetry and Strict Outbound are on, and Remote Desktop is blocked on the home network too. Unusual apps may need Allow on the Troubleshooter." };
     if (body.accept === "leave_audit") return { title: "Left Audit", text: "Everyday Normal protection is on now: threat lists and whitelist expiry." };
     if (body.accept === "admin_lan") return { title: "Settings: Local Network Only", text: "This page now answers only from devices behind the gateway. The router / internet side can no longer open it." };
-    if (body.accept === "block_ipv6" || body.accept === "ipv6_off") return { title: "Block IPv6 Is On", text: "No IPv6 traffic passes the gateway onto the LAN (neighbour discovery still works). Turn it off under Firewall → Hardening if a device needs IPv6." };
+    if (body.accept === "block_ipv6" || body.accept === "ipv6_off") return { title: "Block IPv6 Is On", text: "IPv6 forwarding is blocked across the gateway, including discovery and DHCPv6. Local discovery to the gateway itself still works. Turn it off under Firewall → Hardening if a device needs IPv6." };
     if (body.accept === "block_vpn") return { title: "VPN Ports Are Blocked", text: "Common VPN / WireGuard ports are stopped. VPN apps on phones or PCs will fail until you turn this off under Firewall → Hardening." };
     return null;
   }
@@ -789,7 +789,7 @@
         g.on && g.error ? geoRetry() : h("a.btn", { href: "/settings/general#geo" }, "Location settings"));
     }
     map.set(conns, home);
-    return h("div", h("div.map-stage", map.cv), h("div.legend", h("span", h("i.sw.out"), "Outbound from your network"), h("span", h("i.sw.in"), "Inbound to your network"), home ? h("span", h("i.sw.home"), "This gateway") : null, h("span.hint", "Hover a dot to see devices and destination")),
+    return h("div", h("div.map-stage", map.cv), h("div.legend", h("span", h("i.sw.out"), "Outbound from your network"), h("span", h("i.sw.in"), "Inbound to your network"), home ? h("span", h("i.sw.home"), "This gateway") : null, h("span.hint", "Hover a dot to see devices and destination · " + (conns && conns.blocked ? "stopped attempts, last minute (log rate-limited)" : "fresh forwarded activity"))),
       h("div.attr", "IP locations by ", h("a", { href: "https://db-ip.com", target: "_blank", rel: "noopener" }, "DB-IP"), " (" + (g.month || "") + ")"));
   }
   // The live map, drawn the way the Windows app draws it: an arc from here
@@ -896,7 +896,7 @@
       tip.replaceChildren(
         h("div.tip-row", h("i.sw." + (best.dir === "in" ? "in" : "out"), { "aria-hidden": "true" }), h("span.tip-k", "Devices"), h("span.tip-v", who)),
         h("div.tip-row", h("span.tip-gap"), h("span.tip-k", "Destination"), h("span.tip-v", dest)),
-        h("div.tip-row.tip-meta", h("span.tip-gap"), h("span.tip-v", dir + " · " + best.n + (best.n === 1 ? " connection" : " connections") + " · " + bytes(best.bytes))));
+        h("div.tip-row.tip-meta", h("span.tip-gap"), h("span.tip-v", (best.blocked ? "Stopped attempt · " : "") + dir + " · " + best.n + (best.blocked ? (best.n === 1 ? " logged attempt" : " logged attempts") : (best.n === 1 ? " active path" : " active paths")) + (best.blocked ? "" : " · " + bytes(best.bytes)))));
       tip.hidden = false;
       // Pin to the destination dot (not the cursor), vertically centered on it
       // and just to its right  -  so tip text lines up with the dot to its left.
@@ -915,7 +915,7 @@
   })();
   window.__map = map;
   // Full screen map, like the Windows app: a button toggles it, Esc leaves.
-  let mapFull = false, mapAnim = true;
+  let mapFull = false, mapAnim = true, mapView = "traffic";
   document.addEventListener("keydown", (e) => { if (e.key === "Escape" && mapFull) { mapFull = false; refresh(); } });
   // The countries live connections reach, full names, most used first.
   function countryBox(list) {
@@ -955,7 +955,9 @@
     new ResizeObserver(() => layCards($(".cards.stats"))).observe(mainEl);
     let aq = "", ak = "";
     every(3000, async () => {
-      const d = await api("/api/dashboard");
+      const requestedView = mapView;
+      const d = await api("/api/dashboard?map_view=" + requestedView);
+      if (requestedView !== mapView) return;
       const st = d.status;
       statusBox(st);
       const memPct = st.mem_total ? Math.round(st.mem_used * 100 / st.mem_total) : 0;
@@ -963,7 +965,7 @@
       const card = (t, big, cls, sub, bar, href) => h((href ? (typeof href === "function" ? "button" : "a") : "div") + ".card", typeof href === "function" ? { type: "button", onclick: href } : { href }, h("h2", t), h("div.card-body", h("div.big", big), bar != null ? h("div.track", h("span", { style: "width:" + bar + "%" })) : null), h("div.sub" + (cls ? "." + cls : ""), sub || "\u00a0"));
       // Live throughput: In/Out on two lines, fixed digit slots (no layout jump).
       const speedSub = (p, name) => (p && p.link ? (p.speed || "link") : (name || portMissing(p)));
-      const countries = (cardOn(st, CARDS[4]) && d.map && d.map.countries) || [];
+      const countries = (cardOn(st, CARDS[4]) && (d.countries_now || (d.map && d.map.countries))) || [];
       const q = aq.toLowerCase();
       const alerts = stable("alerts", ak + "|" + q, d.alerts, alertKey).filter((a) => (!ak || alertKind(a) === ak) && (!q || (a.text + " " + (a.device || "")).toLowerCase().includes(q)));
       const chip = (k, label) => h("button.chip" + (ak === k ? ".on" : ""), { onclick: () => { ak = k; refresh(); } }, label);
@@ -982,22 +984,7 @@
             temp: () => card("CPU Temp", st.temp != null ? st.temp.toFixed(1) + " °C" : "n/a", st.temp >= 85 ? "bad" : st.temp >= 75 ? "warn" : "", st.temp >= 85 ? "critical, too hot" : st.temp >= 75 ? "running hot" : "OK"),
             disk: () => card("Disk", diskPct + "%", "", st.disk_total ? bytes(st.disk_used) + " of " + bytes(st.disk_total) : "n/a", diskPct),
             memory: () => card("Memory", memPct + "%", "", bytes(st.mem_used) + " of " + bytes(st.mem_total), memPct),
-            blocked: () => {
-              const n = st.blocked_today || 0;
-              // Quiet first week: still show the count, don't paint attack/high.
-              if (st.alarm_quiet) {
-                return card("Blocked Today", String(n), "ok", "Learning usual · first week", null, "/log?kind=block&today=1");
-              }
-              // Attack compare excludes telemetry / Local Network Only / Block All noise.
-              const alarm = st.blocked_alarm_today != null ? st.blocked_alarm_today : n;
-              const base = st.blocked_alarm_usual != null ? st.blocked_alarm_usual : (st.blocked_usual || 0);
-              // Guard false alarms: need a solid baseline and a clear spike (3× and ≥50).
-              const attack = base >= 20 && alarm >= 50 && alarm >= base * 3;
-              const high = !attack && base >= 10 && alarm >= base * 2;
-              // Short enough for one ALL CAPS line.
-              const sub = attack ? "Likely attack · far above usual" : high ? "Higher than usual" : (base ? "Usual for this hour" : "Open the log");
-              return card("Blocked Today", String(n), attack ? "bad" : high ? "warn" : "ok", sub, null, "/log?kind=block&today=1");
-            },
+            blocked: () => card("Blocked Today", String(st.blocked_today || 0), "ok", "Open the log", null, "/log?kind=block&today=1"),
           };
           // Only cards that are on get built; the server skips their data too.
           const shown = CARDS.filter((c) => cardOn(st, c) && make[c.id]).map((c) => { const e = make[c.id](); e.dataset.key = c.id; return e; });
@@ -1011,7 +998,8 @@
               h("div.tools-row", searchBox("alert-q", aq, (v) => { aq = v; refresh(); }, "Search alerts"), chip("", "All"), chip("device", "New devices"), chip("port", "New ports"), chip("block", "Suspicious")),
               scroller("alerts", null, alertRows(alerts)))),
             grow(panel("Connections", h("span.mute", d.conns.length + " open"), scroller("conns", null, table(["Device", "Remote", "Proto", "Country", "Bytes#"], connRows(stable("conns", "", d.conns, connKey, true)), "No connections tracked right now."))))),
-          h("div.mapcol", h("section.panel.map-panel" + (mapFull ? ".full" : ""), h("div.panel-head", h("h2", "Map"), h("span.mute", dualUp(st)),
+          h("div.mapcol", h("section.panel.map-panel" + (mapFull ? ".full" : ""), h("div.panel-head", h("h2", "Map"),
+            [["traffic", "Traffic Only"], ["blocked", "Blocked Connection Attempts"]].map(([key, label]) => h("button.small" + (mapView === key ? ".isOn" : ".quiet"), { id: "map-view-" + key, "aria-pressed": String(mapView === key), disabled: mapView === key, onclick: () => { mapView = key; map.set({ flows: [] }, d.home); const tip = $(".maptip"); if (tip) tip.hidden = true; refresh(); } }, label + (mapView === key ? " · On" : ""))),
             h("button.small.quiet", { id: "map-anim", onclick: () => { mapAnim = !mapAnim; map.setAnim(mapAnim); refresh(); } }, mapAnim ? "Pause Motion" : "Play Motion"),
             h("button.small.quiet", { id: "map-full", onclick: () => { mapFull = !mapFull; refresh(); } }, mapFull ? "Exit Full Screen" : "Full Screen")), geoCard(d.geo, d.map, d.home)))));
       layCards($(".cards.stats"));
@@ -1196,9 +1184,13 @@
   function troubleshooter() {
     shell("Troubleshooter");
     let mac = (qp0.get("mac") || "").toLowerCase();
+    let outcome = ["stopped", "audit"].includes(qp0.get("outcome")) ? qp0.get("outcome") : "all";
+    const remember = () => history.replaceState(null, "", "/devices/troubleshoot?" + new URLSearchParams(Object.assign(mac ? { mac } : {}, outcome === "all" ? {} : { outcome })));
     let focusedOnce = false;
     every(5000, async () => {
-      const d = await api("/api/troubleshoot?" + new URLSearchParams({ mac }));
+      const requestedOutcome = outcome;
+      const d = await api("/api/troubleshoot?" + new URLSearchParams({ mac, outcome }));
+      if (requestedOutcome !== outcome) return;
       statusBox(d.status);
       const v = d.device;
       const label = (v && v.label) || (d.devices.find((x) => x.mac === mac) || {}).label || "";
@@ -1206,12 +1198,14 @@
       const ordered = mac
         ? d.devices.filter((x) => x.mac === mac).concat(d.devices.filter((x) => x.mac !== mac))
         : d.devices;
-      const pick = h("select", { id: "ts-dev", "aria-label": "Device", onchange: (e) => { mac = e.target.value; focusedOnce = false; history.replaceState(null, "", "/devices/troubleshoot?" + new URLSearchParams(mac ? { mac } : {})); refresh(); } },
+      const pick = h("select", { id: "ts-dev", "aria-label": "Device", onchange: (e) => { mac = e.target.value; focusedOnce = false; remember(); refresh(); } },
         h("option", { value: "" }, "Pick a Device"), ordered.map((x) => h("option", { value: x.mac, selected: x.mac === mac }, x.label)));
+      const outcomePick = h("select", { id: "ts-outcome", "aria-label": "Attempt outcome", onchange: (e) => { outcome = e.target.value; remember(); refresh(); } },
+        [["all", "All attempts"], ["stopped", "Stopped only"], ["audit", "Audit allowed only"]].map(([value, label]) => h("option", { value, selected: outcome === value }, label)));
       const groups = d.groups.map((g) => h("div.sect", { "data-key": g.reason }, h("h4", g.label, " ", h("span.count", "×" + g.count)),
-        table(["What", "Last", "Times#", ""], g.entries.map((e) => h("tr", { "data-key": e.remote },
+        table(["What", "Last", "Times#", ""], g.entries.map((e) => h("tr", { "data-key": e.remote + "|" + e.audit },
           h("td", h("div", e.info.desc, e.audit ? [" ", h("span.pill.tag.audit", "let through")] : null), listLine(e.info, e.audit)), h("td.when", when(e.last)), h("td.num", String(e.count)), h("td.act", allowBtns(mac, e, g.reason)))), "")));
-      const title = mac && label ? ("Blocked for " + label) : "What's Blocked for a Device";
+      const title = mac && label ? ("Recent attempts for " + label) : "Recent Attempts for a Device";
       const focusBanner = mac && label
         ? h("div.notice.focus.ts-focus", { "data-k": "ts-focus" },
             h("div", h("b", "Looking at "), h("b.ts-who", label), h("span.mute", " · last hour")),
@@ -1219,14 +1213,14 @@
         : null;
       render(
         header("Troubleshooter", d.status), pendingNote(d.status), pathNote(d.status), adminNudge(d.status),
-        mac ? null : h("p.hint", "Pick the device that isn’t working. Each line is something the gateway stopped. Allow the one that matches what broke."),
+        mac ? null : h("p.hint", "Pick the device that isn’t working. Lines separate stopped attempts from attempts let through by Audit. Allow the one that matches what broke."),
         h("div.body.one", grow(panel(title, h("span.mute", mac ? (label || mac) : "last hour"),
           focusBanner,
-          h("div.tools-row", pick, v ? h("a.btn.quiet", { href: "/devices#" + v.mac }, "Device Settings") : null),
+          h("div.tools-row", pick, outcomePick, v ? h("a.btn.quiet", { href: "/devices#" + v.mac }, "Device Settings") : null),
           d.alerts.length ? h("p.notice", d.alerts[0].text, " The lines below show what, and how to allow it if it should work.") : null,
           culpritStrip(mac, d.culprit, { focus: true }),
           v ? auditSect(v, null) : null,
-          scroller("ts", null, !mac ? h("p.empty", "Pick a device to see what the firewall stopped for it in the last hour.") : groups.length ? groups : h("p.empty", "Nothing was blocked for this device in the last hour.")),
+          scroller("ts", null, !mac ? h("p.empty", "Pick a device to see its stopped and Audit-allowed attempts in the last hour.") : groups.length ? groups : h("p.empty", "No " + (outcome === "stopped" ? "stopped" : outcome === "audit" ? "Audit-allowed" : "logged") + " attempts for this device in the last hour.")),
           mac && !d.names_seen ? h("p.hint", "No name lookups seen yet, so lines show addresses. Names show up once devices look sites up through the gateway.") : null))));
       // Deep link / banner: put the chosen device front and center once.
       if (mac && !focusedOnce) {
@@ -1355,7 +1349,7 @@
     const view = { "/firewall/audit": "audit", "/firewall/geo": "geo", "/firewall/white": "white", "/firewall/black": "black", "/firewall/rules": "rules", "/firewall/presets": "presets", "/firewall/coach": "coach", "/firewall/mode": "mode", "/firewall/hardening": "hardening" }[PATH] || "main";
     const TITLE = { audit: "Audit", main: "Firewall", mode: "Protection Mode", hardening: "Hardening", geo: "Geo-Blocking", white: "Whitelist", black: "Blacklist", rules: "Rules as loaded", presets: "Protection Levels", coach: "Best Practices" };
     shell(TITLE[view]);
-    every(view === "audit" ? 5000 : 0, async () => {
+    every(view === "audit" ? 5000 : view === "hardening" ? 2000 : 0, async () => {
       if (view === "coach") {
         const d = await api("/api/coach");
         statusBox(d.status);
@@ -1426,13 +1420,14 @@
               toggle("white_expiry", d.white_expiry, "Whitelist Expiry For Auto Allows", "When On, Allows created from Audit or the Troubleshooter expire after 30 days. Allow · Permanent makes an Allow that does not expire. Default Off; On in the Normal protection level."),
               (d.threats || d.block_dot) ? h("p.notice", "Some apps use encrypted DNS on port 443. FoilGateway may not learn new names from those apps. Names already on your lists still become address blocks." + (d.block_dot ? " Encrypted DNS on port 853 is blocked while Block Encrypted DNS is On." : "")) : null,
               toggle("sticky_identity", d.sticky_identity, "Stronger Device Identity", "Remembers hostname and DHCP fingerprint hints when a phone rotates its private MAC. Default Off."),
-              toggle("deep_detect", d.deep_detect, "Deeper Detection", "Adds quieter pattern checks beyond volume spikes (odd port sweeps, repeated soft fails). Default Off."),
+              toggle("deep_detect", d.deep_detect, "Deeper Detection", "Checks unhandled forwarded TCP traffic for port sweeps and repeated connection failures. No alerts for blocked or already handled traffic. Default Off."),
+              d.deep_detect ? h("p.hint", "Observation: " + ((d.detection || {}).state || "unavailable") + (((d.detection || {}).detail) ? ". " + d.detection.detail : "")) : null,
               h("div.qs", h("div.stack", { id: "newdev" }, ["normal", "lan_only"].map((p) => d.new_devices === p ? h("button.isOn", { disabled: true, "aria-pressed": "true" }, POLICY[p]) : h("button.quiet", { onclick: () => change("/api/firewall", { new_devices: p }) }, POLICY[p]))), h("div", h("b", "New Devices"), h("p", "What a device gets the first time it shows up. It's flagged as new either way."))))),
           h("div.col", { "data-k": "fw-hard-side" },
             panel("Lists Downloaded", null, d.feeds.length ? table(["List", "Entries#", "Fetched"], d.feeds.map((f) => h("tr", h("td", f.name, f.error ? h("div.bad", f.error) : null), h("td.num", f.entries), h("td", when(f.fetched_at)))), "") : h("p.empty.padded", "Nothing downloaded. Lists download when you turn on a feature that needs them.")),
             panel("About Hardening", null,
               h("p.hint", "These toggles are what Normal and FortNox set. Changing one moves you to Custom."),
-              h("p.hint", "Stronger Identity and Deeper Detection default Off. Turn one on only after you read what it does."))));
+              h("p.hint", "Stronger Identity and Deeper Detection default Off. Read what each does before turning it on."))));
       } else if (view === "main") {
         const st = d.status || {};
         const chip = d.preset_chip || "Custom";
@@ -1903,6 +1898,50 @@
     });
   }
 
+  function speedTestPanel() {
+    let state = null, polling = false, next = null, actionError = "";
+    const action = h("button", { id: "speed-test-action", onclick: async () => {
+      action.disabled = true;
+      actionError = "";
+      try { await api("/api/speed-test", { action: state && state.running ? "cancel" : "run" }); }
+      catch (e) { actionError = e.message; message.textContent = actionError; }
+      finally { action.disabled = false; clearTimeout(next); await poll(); }
+    } }, "Run speed test");
+    const values = h("div.row", { style: "justify-content:space-between;gap:16px;margin:12px 0" });
+    const message = h("p.hint", { style: "margin-bottom:0", "aria-live": "polite" }, "Loading test status…");
+    const progress = h("progress", { max: 100, value: 0, hidden: true, style: "width:100%;accent-color:var(--blue)" });
+    const root = panel("Internet speed test", action,
+      h("p.hint", "Tests gateway internet, not client Wi-Fi; uses up to 80 MiB and may slow other traffic."), values, progress, message);
+    root.id = "internet-speed-test";
+    root.setAttribute("data-ref", "");
+    const metric = (name, number, unit) => h("div", h("span.mute", name), h("div", { style: "font-size:var(--fs-value);font-weight:var(--fw-bold);color:var(--strong)" }, number, h("span", { style: "font-size:var(--fs-body)" }, " " + unit)));
+    async function poll() {
+      if (!root.isConnected || polling) return;
+      polling = true;
+      try {
+        const v = await api("/api/speed-test");
+        if (!root.isConnected) return;
+        state = v;
+        action.textContent = v.running ? "Cancel" : "Run speed test";
+        action.className = v.running ? "quiet" : "";
+        action.disabled = v.state === "cancelling";
+        progress.hidden = !v.running;
+        progress.value = v.progress;
+        const r = v.running ? null : v.last;
+        values.replaceChildren(metric("Download", r ? r.download_mbps.toFixed(1) : "—", "Mbps"), metric("Upload", r ? r.upload_mbps.toFixed(1) : "—", "Mbps"), metric("HTTP latency", r ? r.latency_ms.toFixed(0) : "—", "ms"));
+        let text = v.running ? (v.state === "cancelling" ? "Cancelling…" : v.phase + " · " + v.progress + "% · " + v.elapsed_secs + " s")
+          : v.state === "failed" ? "Test failed: " + v.error
+          : v.state === "cancelled" ? "Test cancelled. No partial result saved."
+          : v.last ? "Last run: " + when(v.last.at) : "Not run yet.";
+        if (v.last && (v.state === "failed" || v.state === "cancelled")) text += " Last completed result: " + when(v.last.at) + ".";
+        message.textContent = actionError || text;
+      } catch (e) { if (root.isConnected) message.textContent = "Cannot read speed-test status: " + e.message; }
+      finally { polling = false; if (root.isConnected) next = setTimeout(poll, state && state.running ? 500 : 5000); }
+    }
+    next = setTimeout(poll, 0);
+    return root;
+  }
+
   function settings() {
     shell("Settings");
     if (PATH === "/settings/help") return helpPage();
@@ -1968,6 +2007,7 @@
       };
       // Panels by topic: [left column, right column] for each sub-menu.
       const P = {
+        speed: () => speedTestPanel(),
         ports: () => panel("Ports", wanLock, h("p.hint", gloss("WAN"), " is the cable to your router; ", gloss("LAN"), " goes to your switch or devices. You can have more than one LAN port. The WAN port is locked until you unlock it. ", gloss("SSH"), " answers from both sides" + (c.admin_from === "lan" ? "; this page only from the LAN." : ", and so does this page.")),
               portPicker(d.ports, picked.lan, picked.wan, (n, r) => { pickRole(picked, n, r); refresh(); }, null, !unlocked),
               h("div.row", { style: "margin-top:10px" }, h("button", { onclick: savePorts }, "Save Ports"))),
@@ -2077,7 +2117,7 @@
       };
       const TOPICS = {
         // Primary left, secondary/detail right  -  same pattern as Devices.
-        "/settings": [["ports", "address"], ["who", "adminport", "safety"]],
+        "/settings": [["ports", "address", "speed"], ["who", "adminport", "safety"]],
         "/settings/certs": [["certs"], []],
         "/settings/general": [["tz"], ["geo"]],
         "/settings/log": [["log"], []],

@@ -502,8 +502,10 @@ fn route(app: &Arc<App>, req: &Req) -> Resp {
             r.extra.push("Set-Cookie: fg_session=; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=Strict".into());
             r
         }
+        ("GET", "/api/speed-test") => ok(json!(app.speed_test.snapshot())),
+        ("POST", "/api/speed-test") => speed_test_change(app, req, &user),
         ("GET", "/api/status") => ok(status(app, &user)),
-        ("GET", "/api/dashboard") => ok(dashboard(app, &user)),
+        ("GET", "/api/dashboard") => ok(dashboard_view(app, &user, qs(req, "map_view") == "blocked")),
         ("GET", "/api/devices") => ok(devices(app, &user, req)),
         ("POST", "/api/device") => device_change(app, req),
         ("GET", "/api/troubleshoot") => ok(troubleshoot(app, &user, req)),
@@ -1057,10 +1059,10 @@ fn status(app: &App, user: &str) -> Value {
         "disk_total": disk.1,
         "blocked_today": if on("blocked") { app.log.blocked_since(app.midnight()) } else { 0 },
         "blocked_usual": if on("blocked") { app.log.blocked_between(app.midnight().saturating_sub(86400), app.midnight()) } else { 0 },
-        // Attack card uses these (excludes telemetry / Local Network Only / Block All noise).
         "blocked_alarm_today": if on("blocked") { app.log.blocked_alarm_since(app.midnight()) } else { 0 },
         "blocked_alarm_usual": if on("blocked") { app.log.blocked_alarm_between(app.midnight().saturating_sub(86400), app.midnight()) } else { 0 },
         "alarm_quiet": app.policy.read().unwrap().alarm_quiet(now()),
+        // Attack card uses these (excludes telemetry / Local Network Only / Block All noise).
         "cards": cards,
         "new_devices": new_devices,
         "pending": pend,
@@ -1157,109 +1159,58 @@ fn side<'a>(by_ip: &'a HashMap<String, (String, String)>, c: &'a net::Conn) -> (
 /// and every one of them summed by place and direction for the map, so
 /// the map leaves nothing out. `only` keeps one device's, by its address.
 fn conns(app: &App, only: Option<&str>) -> (Vec<Value>, Value) {
-    let t = now();
-    let (by_ip, blocked_countries, allowed_macs, white_addrs) = {
-        let pol = app.policy.read().unwrap();
-        let by_ip: HashMap<String, (String, String)> = pol.devices.iter().filter(|(_, d)| !d.ip.is_empty()).map(|(m, d)| (d.ip.clone(), (App::device_label(d, m), m.clone()))).collect();
-        // Trusted / auditing devices (and white-listed remotes) may still reach a blocked country.
-        let allowed_macs: std::collections::HashSet<String> = pol
-            .devices
-            .iter()
-            .filter(|(_, d)| d.policy == DevicePolicy::Trusted || d.auditing(t))
-            .map(|(m, _)| m.clone())
-            .collect();
-        let blocked_countries: std::collections::HashSet<String> = pol.countries.iter().cloned().collect();
-        // Exact addresses and /32-style singles from the white list text.
-        let white_addrs: std::collections::HashSet<String> = pol
-            .white
-            .iter()
-            .filter_map(|e| parse_entry(e).ok())
-            .filter_map(|e| match e {
-                Entry::Net(n) => Some(n),
-                _ => None,
-            })
-            .collect();
-        (by_ip, blocked_countries, allowed_macs, white_addrs)
+    let by_ip:HashMap<String,(String,String)>=app.policy.read().unwrap().devices.iter().filter(|(_,d)|!d.ip.is_empty()).map(|(m,d)|(d.ip.clone(),(App::device_label(d,m),m.clone()))).collect();
+    let own:std::collections::HashSet<String>=net::all_ports_cached().iter().flat_map(|p|p.ips.iter()).map(|c|c.split('/').next().unwrap_or("").to_string()).collect();
+    let all=net::connections_cached();
+    let mut list:Vec<_>=all.iter().filter(|c|!own.contains(&c.src)&&!own.contains(&c.dst)).filter(|c|only.is_none_or(|ip|c.src==ip||c.dst==ip)).collect();
+    list.sort_unstable_by_key(|c|std::cmp::Reverse(c.bytes));
+    let geo=app.geo.read().unwrap();let names=geo::countries();
+    let rows=list.into_iter().take(200).map(|c|{
+        let(dev,mac,remote,dir)=side(&by_ip,c);
+        let place=remote.parse().ok().and_then(|ip|geo.locate(ip));
+        let domain=app.domain_of(mac,remote);let owner=app.owner_of(remote);
+        let country=place.as_ref().map(|p|names.get(p.country.as_str()).copied().unwrap_or(p.country.as_str()).to_string()).unwrap_or_default();
+        let ports=[(c.proto.clone(),c.dport)];
+        let desc=crate::about::describe(&crate::about::Line{device:dev,dir,remote,domain:&domain,owner:&owner,country:&country,ports:if c.dport>0{&ports}else{&[]}});
+        json!({"key":format!("{} {}:{} {}:{}",c.proto,c.src,c.sport,c.dst,c.dport),"device":dev,"mac":mac,"remote":remote,"dir":dir,"proto":c.proto,"port":c.dport,"state":c.state,"bytes":c.bytes,"place":place,"domain":domain,"owner":owner,"what":crate::ports::purpose(&c.proto,c.dport),"desc":desc})
+    }).collect();
+    drop(geo);
+    (rows,if only.is_none(){observed_map(app,false)}else{Value::Null})
+}
+
+fn observed_map(app:&App,blocked:bool)->Value {
+    let records:Vec<_>=if blocked {
+        app.recent.lock().unwrap().stopped_since(now()-60).into_iter().map(|l|(crate::maptraffic::Key{mac:l.key.mac,remote:l.key.remote,inbound:!l.key.outbound},0,l.count)).collect()
+    }else{
+        app.map_traffic.lock().unwrap().current(std::time::Instant::now()).into_iter().map(|r|(r.key,r.bytes,1)).collect()
     };
-    // Connections to the gateway itself (these pages, SSH) aren't traffic through it.
-    let own: std::collections::HashSet<String> = net::all_ports_cached().iter().flat_map(|p| p.ips.iter()).map(|c| c.split('/').next().unwrap_or("").to_string()).collect();
-    let all = net::connections_cached();
-    let mut list: Vec<&net::Conn> = all.iter().filter(|c| !own.contains(&c.src) && !own.contains(&c.dst)).filter(|c| only.is_none_or(|ip| c.src == ip || c.dst == ip)).collect();
-    list.sort_unstable_by_key(|c| std::cmp::Reverse(c.bytes));
-    let geo = app.geo.read().unwrap();
-    // Map: place (0.1 degree) + direction -> (lat, lon, bytes, connections).
-    // (lat, lon, bytes, connections, a few names for the tooltip)
-    // names = destinations; devices = local device labels for the hover tip.
-    type Flow = (f64, f64, u64, u64, Vec<String>, Vec<String>);
-    let mut flows: HashMap<(i32, i32, &str), Flow> = HashMap::new();
-    let (mut unplaced, mut unplaced_bytes) = (0u64, 0u64);
-    let mut rows = Vec::with_capacity(list.len().min(200));
-    // Live connections per country, for the Countries tile.
-    let mut per_country: HashMap<String, u64> = HashMap::new();
-    let names = geo::countries();
-    for (i, c) in list.iter().enumerate() {
-        let (dev, mac, remote, dir) = side(&by_ip, c);
-        let place = remote.parse().ok().and_then(|ip| geo.locate(ip));
-        let domain = app.domain_of(mac, remote);
-        let owner = app.owner_of(remote);
-        // Blocked countries stay off Countries Now / the map unless traffic is
-        // genuinely allowed (Trusted, auditing, or white-listed remote). Stale
-        // conntrack after a geo block must not keep the country on the list.
-        let country_active = match place.as_ref().map(|p| p.country.as_str()) {
-            Some(code) if blocked_countries.contains(code) => {
-                allowed_macs.contains(mac) || white_addrs.iter().any(|n| n == remote || n.starts_with(&(remote.to_string() + "/")))
-            }
-            _ => true,
-        };
-        if let Some(p) = &place {
-            if country_active {
-                *per_country.entry(p.country.clone()).or_default() += 1;
-            }
-        }
-        match place.as_ref().map(|p| (p.lat, p.lon)) {
-            Some((lat, lon)) if country_active => {
-                let f = flows.entry(((lat * 10.0).round() as i32, (lon * 10.0).round() as i32, dir)).or_insert((lat, lon, 0, 0, Vec::new(), Vec::new()));
-                f.2 += c.bytes;
-                f.3 += 1;
-                // Biggest connections come first, so these are the busiest names.
-                let n = if !domain.is_empty() { domain.clone() } else if !owner.is_empty() { owner.clone() } else { remote.to_string() };
-                if f.4.len() < 4 && !f.4.contains(&n) {
-                    f.4.push(n);
-                }
-                let dlab = if !dev.is_empty() { dev.to_string() } else { "Unknown device".into() };
-                if f.5.len() < 4 && !f.5.contains(&dlab) {
-                    f.5.push(dlab);
-                }
-            }
-            Some(_) => {
-                // Blocked country, not allowed: leave off the map.
-            }
-            None => {
-                unplaced += 1;
-                unplaced_bytes += c.bytes;
-            }
-        }
-        if i < 200 {
-            let country = place.as_ref().map(|p| names.get(p.country.as_str()).copied().unwrap_or(p.country.as_str()).to_string()).unwrap_or_default();
-            let ports = [(c.proto.clone(), c.dport)];
-            let desc = crate::about::describe(&crate::about::Line { device: dev, dir, remote, domain: &domain, owner: &owner, country: &country, ports: if c.dport > 0 { &ports } else { &[] } });
-            rows.push(json!({ "key": format!("{} {}:{} {}:{}", c.proto, c.src, c.sport, c.dst, c.dport), "device": dev, "mac": mac, "remote": remote, "dir": dir, "proto": c.proto, "port": c.dport, "state": c.state, "bytes": c.bytes, "place": place,
-                "domain": domain, "owner": owner, "what": crate::ports::purpose(&c.proto, c.dport), "desc": desc }));
-        }
+    type Flow=(f64,f64,u64,u64,Vec<String>,Vec<String>);
+    let mut flows:HashMap<(i32,i32,&str),Flow>=HashMap::new();let mut per_country:HashMap<String,u64>=HashMap::new();
+    let(mut unplaced,mut unplaced_bytes)=(0u64,0u64);let total:u64=records.iter().map(|r|r.2).sum();
+    let pol=app.policy.read().unwrap();let geo=app.geo.read().unwrap();let names=geo::countries();
+    for(k,bytes,n)in records {
+        let place=k.remote.parse().ok().and_then(|ip|geo.locate(ip));
+        let Some(p)=place else{unplaced+=n;unplaced_bytes+=bytes;continue};
+        let dir=if k.inbound{"in"}else{"out"};
+        *per_country.entry(p.country.clone()).or_default()+=n;
+        let f=flows.entry(((p.lat*10.0).round()as i32,(p.lon*10.0).round()as i32,dir)).or_insert((p.lat,p.lon,0,0,Vec::new(),Vec::new()));f.2+=bytes;f.3+=n;
+        let domain=app.domain_of(&k.mac,&k.remote);let owner=app.owner_of(&k.remote);
+        let dest=if !domain.is_empty(){domain}else if !owner.is_empty(){owner}else{k.remote.clone()};
+        if f.4.len()<4&&!f.4.contains(&dest){f.4.push(dest);}
+        let dev=pol.devices.get(&k.mac).map(|d|App::device_label(d,&k.mac)).unwrap_or_else(||if k.mac.is_empty(){"Unidentified device".into()}else{k.mac.clone()});
+        if f.5.len()<4&&!f.5.contains(&dev){f.5.push(dev);}
     }
-    let mut flows: Vec<_> = flows.into_iter().map(|((_, _, dir), (lat, lon, bytes, n, top, devices))| json!({ "lat": lat, "lon": lon, "dir": dir, "bytes": bytes, "n": n, "names": top, "devices": devices })).collect();
-    flows.sort_unstable_by_key(|f| std::cmp::Reverse(f["bytes"].as_u64().unwrap_or(0)));
-    let mut countries: Vec<(u64, String, String)> = per_country.into_iter().map(|(code, n)| (n, names.get(code.as_str()).map(|s| s.to_string()).unwrap_or_else(|| code.clone()), code)).collect();
-    countries.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
-    let countries: Vec<Value> = countries.into_iter().map(|(n, name, code)| json!({ "code": code, "name": name, "n": n })).collect();
-    let map = json!({ "flows": flows, "total": list.len(), "unplaced": unplaced, "unplaced_bytes": unplaced_bytes, "countries": countries });
-    (rows, map)
+    let mut flows:Vec<_>=flows.into_iter().map(|((_,_,dir),(lat,lon,bytes,n,top,devices))|json!({"lat":lat,"lon":lon,"dir":dir,"bytes":bytes,"n":n,"names":top,"devices":devices,"blocked":blocked})).collect();
+    flows.sort_unstable_by_key(|f|std::cmp::Reverse(f["bytes"].as_u64().unwrap_or(0)+f["n"].as_u64().unwrap_or(0)));
+    let mut countries:Vec<_>=per_country.into_iter().map(|(code,n)|json!({"name":names.get(code.as_str()).copied().unwrap_or(&code),"code":code,"n":n})).collect();
+    countries.sort_by_key(|c|std::cmp::Reverse(c["n"].as_u64().unwrap_or(0)));
+    json!({"flows":flows,"countries":countries,"total":total,"unplaced":unplaced,"unplaced_bytes":unplaced_bytes,"blocked":blocked,"window_secs":if blocked{60}else{4}})
 }
 
 /// Only what still needs the owner: not handled, and not about a device
-/// already trusted or blocked. Newest first.
+/// already trusted, LAN-only or blocked. Newest first.
 fn true_alerts(rows: Vec<crate::caplog::Row>, settled: &std::collections::HashSet<String>) -> Vec<Value> {
-    let mut out: Vec<_> = rows.into_iter().filter(|r| !r.handled && !settled.contains(&r.device)).collect();
+    let mut out: Vec<_> = rows.into_iter().filter(|r| !r.handled && (r.outcome!="unknown"||!settled.contains(&r.device)) && r.reason != "surge" && r.outcome!="dropped" && !(r.kind == "device" && r.reason == "port_observed")).collect();
     out.sort_by_key(|r| std::cmp::Reverse(r.last));
     out.truncate(100);
     out.into_iter()
@@ -1289,6 +1240,15 @@ fn alert_link(r: &crate::caplog::Row) -> String {
         return format!("/devices/troubleshoot?mac={}", r.device);
     }
     format!("/log?kind={}&focus={}", r.kind, r.id)
+}
+
+fn speed_test_change(app:&Arc<App>,req:&Req,user:&str)->Resp {
+    if !app.auth.names().iter().any(|(n,r)|n==user&&r=="admin") {return resp(403,"application/json",json!({"error":"Only an admin can run or cancel a speed test."}).to_string());}
+    match s(&body(req),"action").as_str() {
+        "run"=>match app.speed_test.start(){Ok(())=>ok(json!(app.speed_test.snapshot())),Err(e)=>resp(409,"application/json",json!({"error":e}).to_string())},
+        "cancel"=>{app.speed_test.cancel();ok(json!(app.speed_test.snapshot()))},
+        _=>bad("Unknown speed-test action."),
+    }
 }
 
 /// Whether something brings the daemon back after it exits: systemd sets
@@ -1432,22 +1392,22 @@ fn choice_name(c: &str) -> &'static str {
     }
 }
 
-fn dashboard(app: &App, user: &str) -> Value {
+#[cfg(test)]
+fn dashboard(app: &App, user: &str) -> Value { dashboard_view(app,user,false) }
+
+fn dashboard_view(app: &App, user: &str, blocked: bool) -> Value {
     let _ = crate::updater::ack_pending(&app.dir);
     let (settled, online, total) = {
         let pol = app.policy.read().unwrap();
         let t = now();
         // A device the owner trusted or blocked needs no more looking at.
-        let settled: std::collections::HashSet<String> = pol.devices.iter().filter(|(_, d)| matches!(d.policy, DevicePolicy::Trusted | DevicePolicy::Block)).map(|(m, _)| m.clone()).collect();
+        let settled: std::collections::HashSet<String> = pol.devices.iter().filter(|(_, d)| matches!(d.policy, DevicePolicy::Trusted | DevicePolicy::Block | DevicePolicy::LanOnly)).map(|(m, _)| m.clone()).collect();
         (settled, pol.devices.values().filter(|d| t - d.last_seen < 600).count(), pol.devices.len())
     };
     let mut all = true_alerts(app.log.rows("device", "", now() - 7 * 86400, 200).into_iter().chain(app.log.rows("alert", "", now() - 7 * 86400, 200)).collect(), &settled);
     // M16: best-effort identification from the maker name we already know.
     {
         let pol = app.policy.read().unwrap();
-        if pol.alarm_quiet(now()) {
-            all.retain(|a| a["reason"].as_str() != Some("surge"));
-        }
         for a in &mut all {
             let mac = a["device"].as_str().unwrap_or("").to_string();
             if mac.is_empty() { continue; }
@@ -1465,7 +1425,8 @@ fn dashboard(app: &App, user: &str) -> Value {
         "online": online,
         "device_count": total,
         "conns": conn_list,
-        "map": conn_map,
+        "countries_now": conn_map["countries"],
+        "map": if blocked {observed_map(app,true)}else{conn_map},
         "home": app.home.lock().unwrap().0.clone(),
         "alerts": all,
         "summary": app.summary(),
@@ -1948,6 +1909,7 @@ fn firewall(app: &App, user: &str, with_rules: bool) -> Value {
         "dns_proxy": pol.dns_proxy,
         "sticky_identity": pol.sticky_identity,
         "deep_detect": pol.deep_detect,
+        "detection":app.detection.lock().unwrap().health(pol.deep_detect),
         "peer_filter": pol.peer_filter,
         "peer_filter_available": false,
         "preset": pol.preset,
@@ -2644,12 +2606,13 @@ fn troubleshoot(app: &App, user: &str, req: &Req) -> Value {
     let pol = app.policy.read().unwrap().clone();
     let mut devs: Vec<(String, String)> = pol.devices.iter().map(|(m, d)| (App::device_label(d, m), m.clone())).collect();
     devs.sort_by_cached_key(|(l, m)| (l.to_lowercase(), m.clone()));
-    let lines = if mac.is_empty() { vec![] } else { app.recent.lock().unwrap().for_device(&mac, t - 3600) };
+    let outcome=match qs(req,"outcome").as_str(){"stopped"=>"stopped","audit"=>"audit",_=>"all"};
+    let lines = if mac.is_empty() { vec![] } else { app.recent.lock().unwrap().for_device(&mac, t - 3600).into_iter().filter(|l|outcome=="all"||(outcome=="audit")==l.key.audit).collect() };
     let ix = app.list_index();
     let dev_label = pol.devices.get(&mac).map(|d| App::device_label(d, &mac)).unwrap_or_default();
     let mut groups: Vec<Value> = Vec::new();
     for (reason, label) in crate::rules::REASONS {
-        // One row per address, its ports merged; the badge is the sum.
+        // Keep actual drops and Audit-allowed attempts separate, even at one address.
         let entries: Vec<Value> = crate::recent::Recent::by_address(&lines, reason)
             .into_iter()
             .map(|m| {
@@ -2668,11 +2631,8 @@ fn troubleshoot(app: &App, user: &str, req: &Req) -> Value {
         }
     }
     let d = pol.devices.get(&mac);
-    let alerts: Vec<Value> = if mac.is_empty() { vec![] } else { app.log.rows("alert", "", t - 7 * 86400, 200).into_iter().filter(|r| !r.handled && r.device == mac && r.reason == "surge").map(|mut r| {
-        // Lines from 0.5.8 still say to open the troubleshooter: this is it.
-        r.text = r.text.replace(" Open the troubleshooter to see what and allow it if it should work.", "");
-        json!(r)
-    }).collect() };
+    let settled=pol.devices.iter().filter(|(_,d)|matches!(d.policy,DevicePolicy::Trusted|DevicePolicy::LanOnly|DevicePolicy::Block)).map(|(mac,_)|mac.clone()).collect();
+    let alerts = true_alerts(app.log.rows("alert", "", t - 7 * 86400, 200).into_iter().filter(|r|r.device==mac && !mac.is_empty()).collect(), &settled);
     // Same likely-culprit as the device detail, so Allow sits next to it here too.
     let culprit = if !mac.is_empty() && d.is_some_and(|x| x.auditing(t)) {
         let (rows, _) = app.log.audit_list(t - 7 * 86400, 500);
@@ -2775,6 +2735,7 @@ fn allow_change(app: &Arc<App>, req: &Req, user: &str) -> Resp {
         let reasons: Vec<&str> = if ip_reasons.contains(&reason.as_str()) { ip_reasons.to_vec() } else { vec![reason.as_str()] };
         let (p, n) = if ip_reasons.contains(&reason.as_str()) { ("", 0) } else { (proto.as_str(), port) };
         app.log.handle_audit(&mac, &remote, p, n, &reasons);
+        if p.is_empty(){app.log.handle_resolved_alerts(&mac,&remote);}else{app.log.handle_stopped_alerts(&mac,&crate::caplog::Meta{remote:remote.clone(),proto:p.into(),port:n,dir:if reason=="wan"{"in"}else{"out"}.into(),..Default::default()});}
         app.log.handle_surge(&mac);
     }
     done(r)
@@ -2999,7 +2960,7 @@ mod tests {
     // Load test: cargo test --release -- --ignored scale --nocapture
     #[test]
     fn alerts_only_what_needs_the_owner() {
-        let row = |device: &str, handled: bool, last: i64| crate::caplog::Row { id: last, first: last, last, reason: String::new(), kind: "device".into(), device: device.into(), text: format!("{device} {handled}"), count: 1, handled, remote: String::new(), dir: String::new(), ports: String::new(), domain: String::new() };
+        let row = |device: &str, handled: bool, last: i64| crate::caplog::Row { outcome:"unknown".into(), id: last, first: last, last, reason: String::new(), kind: "device".into(), device: device.into(), text: format!("{device} {handled}"), count: 1, handled, remote: String::new(), dir: String::new(), ports: String::new(), domain: String::new() };
         let settled: std::collections::HashSet<String> = ["trusted-or-blocked".to_string()].into();
         let a = true_alerts(vec![row("open", false, 1), row("open", true, 2), row("trusted-or-blocked", false, 3), row("", false, 4)], &settled);
         let texts: Vec<&str> = a.iter().map(|v| v["text"].as_str().unwrap()).collect();
@@ -3178,5 +3139,126 @@ mod tests {
         let c3 = build_cfg(&json!({"lan": ["eth0", "eth1"], "wan": "eth3", "safety": false}), None).unwrap();
         assert_eq!(c3.lan, vec!["eth0", "eth1"]);
         assert!(build_cfg(&json!({"lan": ["eth0", "eth3"], "wan": "eth3", "safety": false}), None).is_err());
+    }
+}
+
+#[cfg(test)]
+mod handled_alert_regressions {
+    use super::*;
+    #[test]
+    fn unknown_legacy_port_outcome_is_not_assumed_stopped() {
+        let log=crate::caplog::Log::open(":memory:").unwrap();log.add("device","cam","8.8.8.8 on the router side tried tcp 80 on Cam. It's on the Ports list.",1,0);
+        assert_eq!(true_alerts(log.rows("device","",0,10),&Default::default()).len(),1);
+        assert_eq!(log.rows("look","",0,10).len(),1);
+    }
+    #[test]
+    fn blocked_and_legacy_handled_alerts_stay_in_log_not_dashboard() {
+        let log=crate::caplog::Log::open(":memory:").unwrap();
+        log.add_block("alert","cam","Stopped by enforcement.",1,0,&crate::caplog::Meta{outcome:"dropped".into(),..Default::default()});
+        log.add_block("alert","cam","Sudden blocked burst",2,0,&crate::caplog::Meta{reason:"surge".into(),..Default::default()});
+        log.add("device","cam","8.8.8.8 on the router side tried tcp 80 on Cam. It's on the Ports list.",3,0);
+        log.add("alert","cam","Cam reached to 8.8.8.8, which is on a threat list. Audit is on, so it was let through.",4,0);
+        log.add("alert","","Bridged traffic is not filtered",5,0);
+        log.handle_id(log.rows("device","",0,100)[0].id);
+        let raw=log.rows("","",0,100);assert_eq!(raw.len(),5);
+        let shown=true_alerts(raw,&Default::default());assert_eq!(shown.len(),2);assert!(shown.iter().any(|v|v["text"].as_str().unwrap().contains("Audit is on")));
+        assert_eq!(log.rows("","",0,100).len(),5);
+    }
+}
+
+#[cfg(test)]
+mod real_api_tests {
+    use super::*;
+    fn app() -> Arc<App> {
+        static SETUP:Mutex<()>=Mutex::new(());let _guard=SETUP.lock().unwrap();
+        let existing=std::env::var("FOILGW_TEST_EXISTING_STATE").ok();
+        let dir=existing.as_ref().map(std::path::PathBuf::from).unwrap_or_else(||std::env::temp_dir().join(format!("foilgw-api-test-{}",crate::auth::token())));assert!(dir.starts_with(std::env::temp_dir()));std::fs::create_dir_all(&dir).unwrap();
+        let conf=dir.join("gateway.conf");if existing.is_none(){std::fs::write(&conf,"lan=eth1\nwan=eth0\nsafety_hosts=192.168.1.2\nadmin_port=18843\n").unwrap();
+        std::fs::write(dir.join("policy.json"),"{\"mode\":\"normal\"}").unwrap();}
+        let old=std::env::var_os("FOILGW_STATE");std::env::set_var("FOILGW_STATE",&dir);
+        let mut a=App::open(conf.to_str().unwrap());if let Some(v)=old{std::env::set_var("FOILGW_STATE",v)}else{std::env::remove_var("FOILGW_STATE")};
+        if !a.auth.has_users(){a.auth.add("tester","local-fixture-password").unwrap();}
+        a.speed_test=Arc::new(crate::speedtest::SpeedTest::local_fixture(std::env::var("FOILGW_TEST_MEASUREMENT").unwrap_or_else(|_|"http://127.0.0.1:9".into())));
+        Arc::new(a)
+    }
+    #[test]
+    fn detection_repair_does_not_classify_outcome_from_english_suffix() {
+        let log=crate::caplog::Log::open(":memory:").unwrap();
+        log.add("alert","cam","Unresolved warning. Blocked.",1,0);
+        assert_eq!(true_alerts(log.rows("alert","",0,10),&Default::default()).len(),1);
+    }
+    #[test]
+    fn detection_repair_on_has_canonical_unresolved_postfilter_observation() {
+        let a=app();let mut p=a.policy.read().unwrap().clone();p.deep_detect=true;
+        let text=crate::rules::policy_ruleset(a.cfg.read().unwrap().as_ref().unwrap(),&a.plan(&p));
+        assert!(text.contains("chain dd_unhandled"),"On must generate real observation, not only retain a flag");
+        assert!(text.contains("dd_syn4")&&text.contains("dd_syn6"));
+        p.deep_detect=false;let text=crate::rules::policy_ruleset(a.cfg.read().unwrap().as_ref().unwrap(),&a.plan(&p));
+        assert!(!text.contains("chain dd_unhandled"));
+    }
+    fn req(method:&str,token:&str,action:&str)->Req {
+        Req{method:method.into(),path:"/api/speed-test".into(),query:Default::default(),headers:HashMap::from([("x-fg".into(),"1".into()),("cookie".into(),format!("fg_session={token}"))]),body:json!({"action":action}).to_string().into_bytes(),ip:"127.0.0.1".into(),local:"127.0.0.1".into(),local_port:18843}
+    }
+    #[test]
+    fn speed_routes_require_session_csrf_admin_and_valid_action() {
+        let a=app();assert_eq!(route(&a,&req("GET","","" )).status,401);
+        assert_eq!(route(&a,&req("POST","","run")).status,401);
+        let token=a.auth.login("tester","local-fixture-password","127.0.0.1").unwrap();
+        let mut r=req("POST",&token,"run");r.headers.remove("x-fg");assert_eq!(route(&a,&r).status,403);
+        assert_eq!(speed_test_change(&a,&req("POST",&token,"run"),"not-an-admin").status,403);
+        assert_eq!(route(&a,&req("POST",&token,"unknown")).status,400);
+        assert_eq!(route(&a,&req("GET",&token,"")).status,200);
+        assert_eq!(route(&a,&req("POST",&token,"run")).status,200);
+        a.speed_test.cancel();let end=std::time::Instant::now()+Duration::from_secs(5);while a.speed_test.snapshot().running{assert!(std::time::Instant::now()<end);std::thread::sleep(Duration::from_millis(10));}
+        std::fs::remove_dir_all(&a.dir).unwrap();
+    }
+    #[test]
+    fn stopping_one_port_does_not_resolve_a_different_allowed_flow() {
+        let a=app();let mut b=crate::app::Block{reason:"threat".into(),inif:"eth1".into(),physin:"eth1".into(),smac:String::new(),dmac:String::new(),src:"192.168.1.10".into(),dst:"8.8.8.8".into(),proto:"tcp".into(),dport:443,audit:true};
+        a.record_block(&b);b.reason="dot".into();b.audit=false;b.dport=853;a.record_block(&b);assert_eq!(a.log.rows("alert","",0,100).len(),1);
+        b.reason="country".into();a.record_block(&b);assert_eq!(a.log.rows("alert","",0,100).len(),1);b.dport=443;a.record_block(&b);assert!(a.log.rows("alert","",0,100).is_empty());std::fs::remove_dir_all(&a.dir).unwrap();
+    }
+    #[test]
+    fn stopped_traffic_generates_evidence_without_alerts() {
+        let a=app();
+        let mut b=crate::app::Block{reason:"threat".into(),inif:"eth1".into(),physin:"eth1".into(),smac:"02:00:00:00:00:01".into(),dmac:String::new(),src:"192.168.1.10".into(),dst:"8.8.8.8".into(),proto:"tcp".into(),dport:443,audit:false};
+        for reason in ["threat","country","mode","telemetry","devblock"]{b.reason=reason.into();a.record_block(&b);}
+        assert!(a.log.rows("alert","",0,100).is_empty());assert_eq!(a.log.rows("block","",0,100).len(),5);
+        b.reason="threat".into();b.audit=true;a.record_block(&b);assert_eq!(a.log.rows("alert","",0,100).len(),1);assert_eq!(a.log.rows("audit","",0,100).len(),1);
+        std::fs::remove_dir_all(&a.dir).unwrap();
+    }
+    #[test]
+    fn map_modes_separate_forwarded_bytes_from_actual_recent_drop_counts() {
+        let a=app();let at=std::time::Instant::now();let k=crate::maptraffic::Key{mac:"a".into(),remote:"8.8.8.8".into(),inbound:false};
+        {let mut m=a.map_traffic.lock().unwrap();m.sample(HashMap::new(),at);m.sample(HashMap::from([(k,64)]),at);}
+        let drop=crate::recent::Key{mac:"a".into(),reason:"country".into(),remote:"1.1.1.1".into(),proto:"tcp".into(),port:443,outbound:true,audit:false};
+        {let mut r=a.recent.lock().unwrap();r.add(drop.clone(),now());r.add(drop.clone(),now());r.add(crate::recent::Key{audit:true,..drop.clone()},now());r.add(crate::recent::Key{remote:"9.9.9.9".into(),..drop},now()-120);}
+        let traffic=observed_map(&a,false);assert_eq!(traffic["total"],1);assert_eq!(traffic["unplaced_bytes"],64);
+        let blocked=observed_map(&a,true);assert_eq!(blocked["total"],2);assert_eq!(blocked["unplaced"],2);assert_eq!(blocked["unplaced_bytes"],0);assert_eq!(blocked["blocked"],true);
+        std::fs::remove_dir_all(&a.dir).unwrap();
+    }
+    #[test]
+    fn audit_allowed_new_port_is_not_mistaken_for_a_handled_drop() {
+        let a=app();a.policy.write().unwrap().devices.insert("02:00:00:00:00:01".into(),crate::policy::Device{ip:"192.168.1.10".into(),..Default::default()});
+        let mut b=crate::app::Block{reason:"wan".into(),inif:"eth0".into(),physin:"eth0".into(),dmac:"02:00:00:00:00:01".into(),smac:String::new(),dst:"192.168.1.10".into(),src:"8.8.8.8".into(),proto:"tcp".into(),dport:8080,audit:true};
+        a.record_block(&b);assert_eq!(a.log.rows("alert","",0,100).len(),1);
+        b.audit=false;a.record_block(&b);assert!(a.log.rows("alert","",0,100).is_empty());assert!(a.log.rows("","",0,100).iter().any(|r|r.kind=="alert"&&r.handled));
+        b.audit=true;a.record_block(&b);assert_eq!(a.log.rows("alert","",0,100).len(),1);
+        std::fs::remove_dir_all(&a.dir).unwrap();
+    }
+    #[test]
+    #[ignore = "Local headless API harness, run only with an explicit loopback measurement fixture"]
+    fn browser_api_server() {
+        let target=std::env::var("FOILGW_TEST_MEASUREMENT").expect("local fixture required");assert!(target.starts_with("http://127.0.0.1:"));
+        let a=app();let mac="02:00:00:00:00:02";
+        a.policy.write().unwrap().devices.insert(mac.into(),crate::policy::Device{name:"Local fixture client".into(),ip:"192.168.1.10".into(),..Default::default()});
+        for audit in [false,true] {a.recent.lock().unwrap().add(crate::recent::Key{mac:mac.into(),reason:"country".into(),remote:"8.8.8.8".into(),proto:"tcp".into(),port:443,outbound:true,audit},now());}
+        if std::env::var("FOILGW_ISOLATED_API").as_deref()==Ok("1") {
+            assert!(std::fs::read_to_string("/proc/self/uid_map").unwrap().split_whitespace().collect::<Vec<_>>().last()==Some(&"1"));
+            assert!(!std::path::Path::new("/run/systemd/private").exists());
+            let worker=a.clone();std::thread::spawn(move||loop {worker.poll_detection();std::thread::sleep(Duration::from_secs(2));});
+        }
+        let tls=cert(&a.dir).unwrap();let listener=TcpListener::bind("127.0.0.1:18843").unwrap();println!("LOCAL_API_READY {}",a.dir);
+        for tcp in listener.incoming().flatten(){let(a,tls)=(a.clone(),tls.clone());std::thread::spawn(move||{let _=handle(&a,tls,tcp);});}
     }
 }

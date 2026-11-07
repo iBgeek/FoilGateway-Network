@@ -209,7 +209,7 @@ pub struct Plan {
     pub audit: Vec<String>,
     /// Fail-closed new outbound from the LAN side.
     pub strict_outbound: bool,
-    /// When false, drop IPv6 forward (except ND / DHCPv6) so v6 cannot bypass.
+    /// When false, block all IPv6 forwarding across the bridge.
     pub ipv6_enabled: bool,
     /// Block WireGuard / common VPN UDP ports.
     pub block_vpn: bool,
@@ -219,6 +219,7 @@ pub struct Plan {
     /// When On, LAN DNS is marked for the local forwarder hook. Full DoH
     /// on 443 is still not solved by this flag alone.
     pub dns_proxy: bool,
+    pub deep_detect: bool,
 }
 
 impl Default for Plan {
@@ -242,6 +243,7 @@ impl Default for Plan {
             block_vpn: false,
             block_dot: false,
             dns_proxy: false,
+            deep_detect: false,
         }
     }
 }
@@ -298,6 +300,7 @@ fn audit_chains(plan: &Plan) -> String {
         return String::new();
     }
     let macs = set(plan.audit.iter().cloned());
+    let pass=if plan.deep_detect {"dd_audit"}else{"pass"};
     let mut out = String::new();
     for (reason, _) in REASONS.iter().filter(|(r, _)| !NOT_AUDITED.contains(r)) {
         out += &format!("  chain chk_{reason} {{
@@ -318,7 +321,7 @@ fn audit_chains(plan: &Plan) -> String {
         out += &format!(
             "  chain audit_{reason} {{
     ct direction original limit rate 20/second burst 40 packets log prefix \"{LOG_PREFIX}audit:{reason} \" level info
-    goto pass
+    goto {pass}
   }}
 "
         );
@@ -465,16 +468,16 @@ fn inbound_rules(plan: &Plan) -> Vec<String> {
 pub fn forward_rules(_cfg: &Config, plan: &Plan) -> Vec<String> {
     use crate::policy::DevicePolicy as P;
     // The router's DHCP passes untouched, and IPv6 can't find anybody
-    // without neighbour discovery. Neither carries anybody's data.
-    let mut r = vec![
-        "udp sport { 67, 68 } udp dport { 67, 68 } accept".to_string(),
-        "icmpv6 type { nd-neighbor-solicit, nd-neighbor-advert, nd-router-solicit, nd-router-advert } accept".to_string(),
-        "udp sport { 546, 547 } udp dport { 546, 547 } accept".to_string(),
-    ];
-    // IPv6 Off: after ND/DHCPv6, drop the rest of IPv6 so it cannot bypass IPv4 policy.
+    // without neighbour discovery when IPv6 forwarding is enabled.
+    let mut r = Vec::new();
     if !plan.ipv6_enabled {
         r.push("meta nfproto ipv6 jump drop_mode".to_string());
     }
+    r.push("udp sport { 67, 68 } udp dport { 67, 68 } accept".to_string());
+    r.extend([
+        "icmpv6 type { nd-neighbor-solicit, nd-neighbor-advert, nd-router-solicit, nd-router-advert } accept".to_string(),
+        "udp sport { 546, 547 } udp dport { 546, 547 } accept".to_string(),
+    ]);
     match plan.mode {
         Mode::BlockAll => r.push("jump drop_mode".to_string()),
         Mode::LanOnly => r.extend(lan_only("", "", "jump drop_lanonly")),
@@ -578,7 +581,9 @@ pub fn side_table(cfg: &Config) -> String {
 /// safety rules first in every base chain, then the policy. Drop chains
 /// and traffic counters sit beside them.
 pub fn policy_ruleset(cfg: &Config, plan: &Plan) -> String {
-    let blocks = vec![("input", input_rules(cfg, plan)), ("forward", fast_forward(audited(forward_rules(cfg, plan), plan))), ("output", vec![])];
+    let mut forward=fast_forward(audited(forward_rules(cfg,plan),plan));
+    if plan.deep_detect {*forward.last_mut().unwrap()="goto dd_unhandled".into();}
+    let blocks = vec![("input", input_rules(cfg, plan)), ("forward", forward), ("output", vec![])];
     let mut out = ruleset(cfg, &blocks);
     out.truncate(out.len() - 2); // reopen the table
     out += &sets("white", &plan.white);
@@ -622,6 +627,8 @@ pub fn policy_ruleset(cfg: &Config, plan: &Plan) -> String {
         "  chain acct_fwd {{\n    type filter hook forward priority -10; policy accept;\n    {FROM_LAN} update @dev_up {{ ether saddr counter }}\n    {FROM_WAN} update @dev_down {{ ether daddr counter }}\n    {FROM_LAN} ct state new ip saddr != 0.0.0.0 update @seen4 {{ ether saddr . ip saddr }}\n    {FROM_LAN} ct state new ip6 saddr != :: update @seen6 {{ ether saddr . ip6 saddr }}\n  }}\n"
     );
     out += &format!("  chain acct_in {{\n    type filter hook input priority -10; policy accept;\n    {FROM_LAN} update @dev_up {{ ether saddr counter }}\n    {FROM_LAN} ct state new ip saddr != 0.0.0.0 update @seen4 {{ ether saddr . ip saddr }}\n  }}\n");
+    out += &map_observer();
+    if plan.deep_detect {out+=&detection_observer();}
     out += &audit_chains(plan);
     out += "  chain pass {\n    ct mark and 0xfffffffc != @@GEN@@ ct mark set @@GEN@@\n    ct direction original ct mark set ct mark or 0x1 accept\n    ct mark set ct mark or 0x2 accept\n  }\n";
     out += "}\n";
@@ -950,4 +957,102 @@ mod tests {
         let listed = "table inet foilgateway {\n chain input {\n type filter hook input priority filter; policy accept;\n drop # handle 9\n ip saddr 10.10.10.42 tcp dport { 22, 8443 } accept comment \"foilgw-safety\" # handle 2\n }\n}";
         assert!(safety_first(&cfg(), listed).is_err());
     }
+}
+
+#[cfg(test)]
+mod map_regressions {
+    use super::*;
+    #[test]
+    fn observer_is_after_filter_and_bounded() {
+        let cfg=Config::parse("lan=eth1\nwan=eth0\nsafety_hosts=192.168.1.2").unwrap();
+        let text=policy_ruleset(&cfg,&Plan::default());
+        assert!(text.contains("chain observed"));
+        assert!(text.contains("hook postrouting priority 300"));
+        assert!(text.contains("size 4096; flags dynamic, timeout; timeout 8s"));
+    }
+    #[test]
+    fn ipv6_block_precedes_nd_and_dhcp6() {
+        let cfg=Config::parse("lan=eth1\nwan=eth0\nsafety_hosts=192.168.1.2").unwrap();
+        let r=forward_rules(&cfg,&Plan{ipv6_enabled:false,..Default::default()});
+        let drop=r.iter().position(|s|s.contains("meta nfproto ipv6 jump drop_mode")).unwrap();
+        assert!(drop<r.iter().position(|s|s.contains("nd-neighbor-solicit")).unwrap());
+        assert!(drop<r.iter().position(|s|s.contains("546, 547")).unwrap());
+        assert!(drop<r.iter().position(|s|s.contains("67, 68")).unwrap(),"the family-agnostic DHCP-port exception must not admit IPv6 either");
+    }
+}
+
+/// Observation only, after inet forwarding filters; ingress marks retain the bridge side.
+fn map_observer() -> String {
+    let mut out=String::new();
+    for (family,kind) in [(4,"ipv4_addr"),(6,"ipv6_addr")] {
+        for dir in ["out","in"] {
+            out+=&format!(" set map_{dir}{family} {{ type ether_addr . {kind}; size 4096; flags dynamic, timeout; timeout 8s; }}\n");
+        }
+    }
+    out+=" chain observed { type filter hook postrouting priority 300; policy accept;\n";
+    for (f,ip) in [(4,"ip"),(6,"ip6")] {
+        out+=&format!("  {FROM_LAN} update @map_out{f} {{ ether saddr . {ip} daddr counter }}\n");
+        out+=&format!("  {FROM_WAN} update @map_in{f} {{ ether daddr . {ip} saddr counter }}\n");
+    }
+    out+" }\n"
+}
+
+#[cfg(test)]
+mod isolated_fixture_rules {
+    use super::*;
+    #[test]
+    #[ignore = "Writes policy fixtures only for the isolated namespace harness"]
+    fn emit_isolated_policy_fixtures() {
+        let out=std::env::var("FOILGW_NFT_FIXTURES").expect("fixture output directory required");std::fs::create_dir_all(&out).unwrap();
+        let cfg=Config::parse("lan=eth1\nwan=eth0\nsafety_hosts=192.168.1.2").unwrap();
+        let countries=std::sync::Arc::new(Elems{v4:"8.8.8.8".into(),v6:"2606:4700::1".into(),n4:1,n6:1,hidden:false});
+        for name in ["allowed","allowed-off","incoming-audit","device-block","device-lan","threat-block","hardening-block","ipv6-blocked","country-blocked","country-audit","country-trusted","country-allow","country-open-port","country-whitelist","country-device-audit","country-safety","ipv6-safety"] {
+            let mut p=Plan::default();p.deep_detect=std::env::var_os("FOILGW_DETECTION_FIXTURES").is_some();if name=="ipv6-blocked"||name=="ipv6-safety"{p.ipv6_enabled=false;}
+            if name=="allowed-off"{p.deep_detect=false;}
+            if name=="incoming-audit"{p.mode=Mode::Audit;}
+            if name=="threat-block"{p.threats=Nets{v4:vec!["8.8.8.8".into()],v6:vec!["2606:4700::1".into()]};}
+            if name=="hardening-block"{p.strict_outbound=true;}
+            if name=="device-block"||name=="device-lan"{p.devices.push(DeviceRules{mac:"02:00:00:00:00:02".into(),policy:if name=="device-block"{crate::policy::DevicePolicy::Block}else{crate::policy::DevicePolicy::LanOnly},..Default::default()});}
+            if name.starts_with("country"){p.countries=countries.clone();}
+            if name=="country-audit"{p.mode=Mode::Audit;}
+            if name=="country-whitelist"{p.white=Nets{v4:vec!["8.8.8.8".into()],v6:vec!["2606:4700::1".into()]};}
+            if name=="country-device-audit"{p.audit=vec!["02:00:00:00:00:02".into()];}
+            if name=="country-open-port"{p.inbound.push(Inbound{proto:"udp",port:8084,mac:None,on:true,lan_off:false});}
+            if name=="country-trusted"||name=="country-allow"{p.devices.push(DeviceRules{mac:"02:00:00:00:00:02".into(),policy:if name=="country-trusted"{crate::policy::DevicePolicy::Trusted}else{crate::policy::DevicePolicy::Normal},allow:if name=="country-allow"{vec![Match::Nets(Nets{v4:vec!["8.8.8.8".into()],v6:vec!["2606:4700::1".into()]})]}else{vec![]},..Default::default()});}
+            let mut c=cfg.clone();if name.ends_with("-safety"){c.safety_hosts=vec!["8.8.8.9".parse().unwrap(),"2606:4700::2".parse().unwrap()];}
+            std::fs::write(format!("{out}/{name}.nft"),policy_ruleset(&c,&p)).unwrap();
+        }
+    }
+}
+
+/// Canonical default/Audit acceptance is tagged before pass; only post-filter
+/// evidence is published. Every update is a separate non-verdict rule, so a
+/// full metadata set cannot prevent the final goto pass.
+fn detection_observer()->String {
+    // nft 1.0.9 serializes typeof metadata for at most four concat fields.
+    // Group the contiguous IP pair; padding/offsets are unchanged. Replies
+    // retain wire-order addresses and are normalized by the decoder.
+    let mut out=String::new();
+    for(f,addresses)in [(4,"@nh,96,64"),(6,"@nh,64,256")] {
+        for n in ["eligible","syn","ack","rst"] {
+            let tail=if n=="eligible"||n=="syn" {"@th,0,64 . meta mark"}else{"@th,0,32 . tcp ackseq"};
+            out+=&format!(" set dd_{n}{f} {{ typeof ether saddr . {addresses} . {tail}; size 512; flags dynamic, timeout; timeout 20s; }}\n");
+        }
+    }
+    for(name,audit)in [("unhandled",false),("audit",true)] {
+        out+=&format!(" chain dd_{name} {{\n");
+        for(f,addresses)in [(4,"@nh,96,64"),(6,"@nh,64,256")] {for(side,mac,dir)in [(FROM_LAN,"saddr",1),(FROM_WAN,"daddr",2)] {
+            let tag=dir+if audit{2}else{0};
+            out+=&format!("  {side} meta nfproto ipv{f} tcp flags & (syn | ack) == syn update @dd_eligible{f} {{ ether {mac} . {addresses} . @th,0,64 . {tag} }}\n");
+        }}
+        out+="  goto pass\n }\n";
+    }
+    out+=" chain dd_observed { type filter hook postrouting priority 301; policy accept;\n";
+    for(f,addresses)in [(4,"@nh,96,64"),(6,"@nh,64,256")] {for(side,mac,dir)in [(FROM_LAN,"saddr",1),(FROM_WAN,"daddr",2)] {
+        let key=format!("ether {mac} . {addresses} . @th,0,64");
+        for tag in [dir,dir+2] {out+=&format!("  {side} meta nfproto ipv{f} tcp flags & (syn | ack) == syn {key} . {tag} @dd_eligible{f} update @dd_syn{f} {{ {key} . {tag} }}\n");}
+        let reply=format!("ether {mac} . {addresses} . @th,0,32 . tcp ackseq");
+        for(n,flag)in [("ack","syn"),("rst","rst")] {out+=&format!("  {side} meta nfproto ipv{f} tcp flags & ({flag} | ack) == ({flag} | ack) update @dd_{n}{f} {{ {reply} }}\n");}
+    }}
+    out+" }\n"
 }

@@ -111,6 +111,7 @@ impl Db {
     }
 
     pub fn locate(&self, ip: IpAddr) -> Option<Place> {
+        if !crate::maptraffic::public_ip(ip) { return None; }
         let (four, k) = key(ip);
         if four {
             let k = k as u32;
@@ -336,19 +337,19 @@ mod tests {
             let lon = if i < 600 { "151.2" } else { "116.4" };
             csv += &format!("{a},{b},OC,{cc},\"Some, Region\",City,-33.8,{lon}\n");
         }
-        csv += "2001:db8::,2001:db8::ffff,EU,DE,x,y,52.5,13.4\n";
+        csv += "2001:4860::,2001:4860::ffff,EU,DE,x,y,52.5,13.4\n";
         let dir = std::env::temp_dir().join(format!("fgw-geo-{}", crate::auth::token()));
         assert_eq!(build(csv.as_bytes(), &dir).unwrap(), 3);
         let db = Db::open(&dir);
         assert_eq!(db.locate("1.0.1.5".parse().unwrap()).unwrap().country, "AU");
         assert_eq!(db.locate("1.2.100.1".parse().unwrap()).unwrap().country, "CN");
         assert!(db.locate("9.9.9.9".parse().unwrap()).is_none());
-        assert_eq!(db.locate("2001:db8::5".parse().unwrap()).unwrap().country, "DE");
+        assert_eq!(db.locate("2001:4860::5".parse().unwrap()).unwrap().country, "DE");
         // The 600 AU /24s are one range; AU and CN together join into one.
         let au = db.block_ranges(&["AU".into()]);
         assert_eq!((au.v4.as_str(), au.n4, au.n6), ("1.0.0.0-1.2.87.255", 1, 0));
         let both = db.block_ranges(&["AU".into(), "CN".into(), "DE".into()]);
-        assert_eq!((both.v4.as_str(), both.v6.as_str()), ("1.0.0.0-1.4.175.255", "2001:db8::-2001:db8::ffff"));
+        assert_eq!((both.v4.as_str(), both.v6.as_str()), ("1.0.0.0-1.4.175.255", "2001:4860::-2001:4860::ffff"));
         let _ = std::fs::remove_dir_all(dir);
     }
 
@@ -390,5 +391,41 @@ mod tests {
         assert!(e.contains("127.0.0.1:9"), "{e}");
         assert!(!meta(&dir).error.is_empty());
         let _ = std::fs::remove_dir_all(dir.parent().unwrap());
+    }
+}
+
+#[cfg(test)]
+mod non_public_regressions {
+    use super::*;
+    #[test]
+    fn link_local_and_multicast_are_never_foreign_countries() {
+        let db=Db{v4:vec![Span4{start:0,end:u32::MAX,cc:*b"ZA",lat:0,lon:0}],v6:vec![Span{start:0,end:u128::MAX,cc:*b"ZA",lat:0,lon:0}]};
+        for ip in ["fe80::1","ff02::fb","ff02::1:3","::","::1","fc00::1","192.168.1.1","224.0.0.251","127.0.0.1","0.0.0.0"] {
+            assert!(db.locate(ip.parse().unwrap()).is_none(),"{ip}");
+        }
+        assert_eq!(db.locate("8.8.8.8".parse().unwrap()).unwrap().country,"ZA");
+    }
+}
+
+#[cfg(test)]
+mod all_country_coverage {
+    use super::*;
+    #[test]
+    fn every_supported_code_builds_both_family_ranges_and_looks_up() {
+        let mut db=Db::default();
+        for (i,code) in countries().keys().enumerate(){let c=code.as_bytes();let cc=[c[0],c[1]];let start=0x01000000+(i as u32)*256;
+            db.v4.push(Span4{start,end:start+255,cc,lat:0,lon:0});
+            let start=u128::from("2600::".parse::<std::net::Ipv6Addr>().unwrap())+((i as u128)<<64);db.v6.push(Span{start,end:start+65535,cc,lat:0,lon:0});
+        }
+        for (i,code) in countries().keys().enumerate(){
+            let ip=std::net::Ipv4Addr::from(0x01000001+(i as u32)*256);let ip6=std::net::Ipv6Addr::from(u128::from("2600::".parse::<std::net::Ipv6Addr>().unwrap())+((i as u128)<<64)+1);
+            assert_eq!(db.locate(ip.into()).unwrap().country,*code);assert_eq!(db.locate(ip6.into()).unwrap().country,*code);
+            let e=db.block_ranges(&[code.to_string()]);assert_eq!((e.n4,e.n6),(1,1),"{code}");
+            assert_eq!(e.v4,format!("{}-{}",std::net::Ipv4Addr::from(u32::from(ip)-1),std::net::Ipv4Addr::from(u32::from(ip)+254)));
+            assert_eq!(e.v6,format!("{}-{}",std::net::Ipv6Addr::from(u128::from(ip6)-1),std::net::Ipv6Addr::from(u128::from(ip6)+65534)));
+        }
+        let all:Vec<_>=countries().keys().map(|s|s.to_string()).collect();let ranges=db.block_ranges(&all);assert_eq!(ranges.n4,1);assert_eq!(ranges.n6,all.len());
+        let alternating:Vec<_>=all.iter().step_by(2).cloned().collect();let ranges=db.block_ranges(&alternating);assert_eq!((ranges.n4,ranges.n6),(alternating.len(),alternating.len()));
+        let unknown=db.block_ranges(&["not-a-country".into()]);assert!(unknown.v4.is_empty()&&unknown.v6.is_empty());
     }
 }

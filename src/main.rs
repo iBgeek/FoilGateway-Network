@@ -4,6 +4,9 @@ mod anyport;
 mod app;
 mod names;
 mod auth;
+mod maptraffic;
+mod detection;
+mod speedtest;
 mod bridge;
 mod caplog;
 mod certs;
@@ -77,12 +80,7 @@ pub fn apply_text(cfg: &Config, text: &str, prev: &str) -> Result<(), String> {
     let restore = if prev.starts_with("table netdev") {
         prev.to_string()
     } else {
-        let mut restore = String::new();
-        for fam in ["netdev", "inet"] {
-            let previous = nft(&["list", "table", fam, rules::TABLE], None).unwrap_or_default();
-            restore += &format!("table {fam} {t}\ndelete table {fam} {t}\n{previous}", t = rules::TABLE);
-        }
-        restore
+        snapshot_rules(|args| nft(args, None))?
     };
     fs::write(backup_path(), restore).map_err(|e| e.to_string())?;
 
@@ -110,12 +108,90 @@ pub fn apply_text(cfg: &Config, text: &str, prev: &str) -> Result<(), String> {
         return Err(format!("rules rejected, nothing changed: {e}"));
     }
     // -t leaves set contents out: only the rules' order is checked.
-    let listed = nft(&["-t", "list", "table", "inet", rules::TABLE], None)?;
-    if let Err(e) = rules::safety_first(cfg, &listed) {
-        nft(&["-f", &backup_path()], None)?;
-        return Err(format!("safety check failed after loading, put the old rules back: {e}"));
+    verify_loaded_rules(cfg, nft(&["-t", "list", "table", "inet", rules::TABLE], None),
+        || nft(&["-f", &backup_path()], None))?;
+    Ok(())
+}
+
+fn snapshot_rules(mut list: impl FnMut(&[&str]) -> Result<String, String>) -> Result<String, String> {
+    let inventory = list(&["-j", "list", "tables"])
+        .map_err(|e| format!("couldn't snapshot existing rules; nothing changed: {e}"))?;
+    let inventory: serde_json::Value = serde_json::from_str(&inventory)
+        .map_err(|e| format!("invalid table inventory; nothing changed: {e}"))?;
+    let tables = inventory.get("nftables").and_then(|v| v.as_array())
+        .ok_or("missing table inventory; nothing changed")?;
+    let mut restore = String::new();
+    for fam in ["netdev", "inet"] {
+        let present = tables.iter().filter_map(|v| v.get("table"))
+            .any(|t| t.get("family").and_then(|v| v.as_str()) == Some(fam)
+                && t.get("name").and_then(|v| v.as_str()) == Some(rules::TABLE));
+        let previous = if present {
+            let text = list(&["list", "table", fam, rules::TABLE])
+                .map_err(|e| format!("couldn't snapshot {fam} rules; nothing changed: {e}"))?;
+            if !text.trim_start().starts_with(&format!("table {fam} {} {{", rules::TABLE)) {
+                return Err(format!("invalid {fam} rule snapshot; nothing changed"));
+            }
+            text
+        } else { String::new() };
+        restore += &format!("table {fam} {t}\ndelete table {fam} {t}\n{previous}", t = rules::TABLE);
+    }
+    Ok(restore)
+}
+
+fn verify_loaded_rules(cfg: &Config, listed: Result<String, String>, mut restore: impl FnMut() -> Result<String, String>) -> Result<(), String> {
+    let checked = listed.and_then(|text| rules::safety_first(cfg, &text));
+    if let Err(e) = checked {
+        return match restore() {
+            Ok(_) => Err(format!("safety check failed after loading; restored previous rules: {e}")),
+            Err(undo) => Err(format!("safety check failed after loading: {e}; immediate restoration failed: {undo}; undo timer remains armed")),
+        };
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod nft_failure_tests {
+    use super::*;
+    #[test]
+    fn snapshot_error_does_not_become_empty_restore() {
+        assert!(snapshot_rules(|_| Err("injected nft abort".into())).is_err());
+    }
+    #[test]
+    fn safety_list_error_restores_previous_rules() {
+        let mut calls = 0;
+        assert!(verify_loaded_rules(&Config::parse("lan=eth1\nwan=eth0\nsafety_hosts=192.168.1.2").unwrap(), Err("injected nft abort".into()), || { calls += 1; Ok(String::new()) }).is_err());
+        assert_eq!(calls, 1);
+    }
+    #[test]
+    fn missing_tables_are_valid_only_after_successful_inventory() {
+        let mut calls = 0;
+        let text = snapshot_rules(|args| {
+            calls += 1;
+            assert_eq!(args, &["-j", "list", "tables"]);
+            Ok("{\"nftables\":[]}".into())
+        }).unwrap();
+        assert_eq!(calls,1);
+        assert!(text.contains("delete table inet foilgateway"));
+        assert!(snapshot_rules(|_| Ok("{}".into())).is_err());
+        assert!(snapshot_rules(|_| Ok("not json".into())).is_err());
+    }
+    #[test]
+    fn present_table_listing_failures_and_empty_text_fail_closed() {
+        for result in [Err("abort".into()),Ok(String::new())] {
+            assert!(snapshot_rules(|args| {
+                if args==["-j", "list", "tables"] {
+                    Ok("{\"nftables\":[{\"table\":{\"family\":\"inet\",\"name\":\"foilgateway\"}}]}".into())
+                } else { result.clone() }
+            }).is_err());
+        }
+    }
+    #[test]
+    fn restore_failure_is_reported_with_timer_retained() {
+        let cfg=Config::parse("lan=eth1\nwan=eth0\nsafety_hosts=192.168.1.2").unwrap();
+        let e=verify_loaded_rules(&cfg,Err("abort".into()),||Err("restore rejected".into())).unwrap_err();
+        assert!(e.contains("restore rejected") && e.contains("timer remains armed"));
+    }
+
 }
 
 pub fn confirm() -> Result<(), String> {

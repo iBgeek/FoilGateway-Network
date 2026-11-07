@@ -429,7 +429,7 @@ th, td.when { white-space: nowrap; }
 
 /* 0.6.1 */
 .thr { display: grid; gap: 2px; margin-top: 0; width: 100%; min-width: 0; }
-.thr-row { display: grid; grid-template-columns: 1.6em 11.5ch; align-items: baseline; justify-content: start; gap: 4px; min-width: 0; }
+.thr-row { display: grid; grid-template-columns: 1.6em max-content; align-items: baseline; justify-content: start; gap: 4px; min-width: 0; }
 .thr-lab { color: var(--dim); font-size: 11px; letter-spacing: var(--ls-label); text-transform: uppercase; font-weight: var(--fw-bold); }
 .thr-num { min-width: 0; overflow: hidden; }
 .thr-val {
@@ -437,7 +437,7 @@ th, td.when { white-space: nowrap; }
   grid-template-columns: 7ch 4ch;
   column-gap: 4px;
   align-items: baseline;
-  width: 11.5ch;
+  width: max-content;
   font: var(--fw-bold) 13px/1.25 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   font-variant-numeric: tabular-nums;
 }
@@ -568,4 +568,4 @@ mark.help-hit { background: #5a4214; color: var(--warn-strong); padding: 0 2px; 
 .box:has(.countries-now-box) { width: min(560px, 94vw); }
 .scroll.clist table.countries-now td.name { white-space: normal; overflow: visible; text-overflow: clip; word-break: normal; }
 .scroll.clist table.countries-now th, .scroll.clist table.countries-now td { padding: 6px 8px; }
-.card[data-key="countries"] .sub { white-space: normal; height: auto; overflow: visible; text-overflow: clip; }
+.cards.stats .card[data-key="countries"] .sub { white-space: normal; height: auto; overflow: visible; text-overflow: clip; }
