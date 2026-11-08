@@ -10,12 +10,12 @@ Copyright (C) 2026 iBGeek
 
 **Gateway Address** - DHCP from the router, or a fixed address with gateway and DNS. After a fixed-address change, open the new URL within the countdown and sign in to keep it.
 
-**Internet speed test** - measures the gateway's internet download speed, upload speed and HTTP latency using Cloudflare.
+**Internet speed test** - measures the gateway's internet download speed, upload speed and HTTP response latency using Cloudflare.
 
 The panel shows:
 
 - **Download** and **Upload** - measured speed in Mbps.
-- **HTTP latency** - the median time for an HTTPS request, in milliseconds.
+- **HTTP response latency** - the median time from sending a request to the first byte of the reply, in milliseconds. Name lookup, connection and encryption setup are not counted. This is not an ICMP ping.
 - **Progress** and **elapsed time** - the current test stage and time spent running.
 - **Last result** - the most recent completed test and its time. Kept until FoilGateway restarts.
 
@@ -24,7 +24,7 @@ The panel shows:
 - **Run speed test** - starts a test. Admin access is required.
 - **Cancel** - stops the test. Wait for cleanup to finish before starting another.
 
-A test can transfer up to 64 MiB down and 16 MiB up, plus protocol overhead, and may slow other traffic. It has a forty-second overall limit. If a test fails or is cancelled, the earlier completed result stays.
+A test can transfer up to 64 MiB down and 16 MiB up, plus protocol overhead, and may slow other traffic. Download is measured for up to 8 seconds from its first byte, or until 64 MiB arrives. Connection setup is not counted in either speed. It has a forty-second overall limit. If a test fails or is cancelled, the earlier completed result stays.
 
 The gateway uses HTTPS certificate checks. Cloudflare receives its public address and measurement requests. Results estimate the gateway's connection to Cloudflare.
 

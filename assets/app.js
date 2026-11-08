@@ -1928,7 +1928,7 @@
         progress.hidden = !v.running;
         progress.value = v.progress;
         const r = v.running ? null : v.last;
-        values.replaceChildren(metric("Download", r ? r.download_mbps.toFixed(1) : "—", "Mbps"), metric("Upload", r ? r.upload_mbps.toFixed(1) : "—", "Mbps"), metric("HTTP latency", r ? r.latency_ms.toFixed(0) : "—", "ms"));
+        values.replaceChildren(metric("Download", r ? r.download_mbps.toFixed(1) : "—", "Mbps"), metric("Upload", r ? r.upload_mbps.toFixed(1) : "—", "Mbps"), metric("HTTP response latency", r ? r.latency_ms.toFixed(0) : "—", "ms"));
         let text = v.running ? (v.state === "cancelling" ? "Cancelling…" : v.phase + " · " + v.progress + "% · " + v.elapsed_secs + " s")
           : v.state === "failed" ? "Test failed: " + v.error
           : v.state === "cancelled" ? "Test cancelled. No partial result saved."

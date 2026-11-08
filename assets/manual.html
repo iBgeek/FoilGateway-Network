@@ -15,7 +15,7 @@ code { background:#10243a; padding:1px 5px; border-radius:4px; font-size:.92em; 
 .help-table th:first-child, .help-table td:first-child { white-space:nowrap; }
 .meta { color:var(--dim); font-size:.9rem; margin-bottom:2rem; }
 hr.chap { border:0; border-top:1px solid var(--line); margin:2.5rem 0; }
-</style></head><body><main><h1>FoilGateway Network - Help Manual</h1><p class="meta">Copyright (C) 2026 iBGeek · Version 1.1.0</p><section id="getting-started"><h1>Getting Started</h1>
+</style></head><body><main><h1>FoilGateway Network - Help Manual</h1><p class="meta">Copyright (C) 2026 iBGeek · Version 1.1.1</p><section id="getting-started"><h1>Getting Started</h1>
 <p>Copyright (C) 2026 iBGeek</p>
 <h2>What FoilGateway Does</h2>
 <p><strong>FoilGateway Network</strong> - a bridge between the WAN port and the LAN port. Traffic that crosses that path can be watched, logged, and blocked. Your router still hands out addresses. The gateway gets its own address from the router.</p>
@@ -342,12 +342,12 @@ hr.chap { border:0; border-top:1px solid var(--line); margin:2.5rem 0; }
 <h2>Network &amp; Access</h2>
 <p><strong>Ports (WAN / LAN)</strong> - which interfaces are WAN and LAN. WAN is locked until you Unlock WAN (confirm; undo timer). SSH answers from both sides. Whether this settings page answers from the router side depends on Who Can Open This Page.</p>
 <p><strong>Gateway Address</strong> - DHCP from the router, or a fixed address with gateway and DNS. After a fixed-address change, open the new URL within the countdown and sign in to keep it.</p>
-<p><strong>Internet speed test</strong> - measures the gateway&#x27;s internet download speed, upload speed and HTTP latency using Cloudflare.</p>
+<p><strong>Internet speed test</strong> - measures the gateway&#x27;s internet download speed, upload speed and HTTP response latency using Cloudflare.</p>
 <p>The panel shows:</p>
 <ul>
 <li><strong>Download</strong> and <strong>Upload</strong> - measured speed in Mbps.
 </li>
-<li><strong>HTTP latency</strong> - the median time for an HTTPS request, in milliseconds.
+<li><strong>HTTP response latency</strong> - the median time from sending a request to the first byte of the reply, in milliseconds. Name lookup, connection and encryption setup are not counted. This is not an ICMP ping.
 </li>
 <li><strong>Progress</strong> and <strong>elapsed time</strong> - the current test stage and time spent running.
 </li>
@@ -361,7 +361,7 @@ hr.chap { border:0; border-top:1px solid var(--line); margin:2.5rem 0; }
 <li><strong>Cancel</strong> - stops the test. Wait for cleanup to finish before starting another.
 </li>
 </ul>
-<p>A test can transfer up to 64 MiB down and 16 MiB up, plus protocol overhead, and may slow other traffic. It has a forty-second overall limit. If a test fails or is cancelled, the earlier completed result stays.</p>
+<p>A test can transfer up to 64 MiB down and 16 MiB up, plus protocol overhead, and may slow other traffic. Download is measured for up to 8 seconds from its first byte, or until 64 MiB arrives. Connection setup is not counted in either speed. It has a forty-second overall limit. If a test fails or is cancelled, the earlier completed result stays.</p>
 <p>The gateway uses HTTPS certificate checks. Cloudflare receives its public address and measurement requests. Results estimate the gateway&#x27;s connection to Cloudflare.</p>
 <p><strong>Using it:</strong> Settings → Network &amp; Access, below Gateway Address.</p>
 <p><strong>Who Can Open This Page</strong></p>
