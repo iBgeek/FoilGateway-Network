@@ -652,10 +652,16 @@
     return h("p.notice.audit", what, " ", h("a", { href: "/firewall/audit" }, "See what would be blocked"),
       st.mode === "audit" ? [" · ", h("a", { href: "/firewall#mode" }, "Change protection mode")] : null);
   }
+  // Shown on every page while a newer release is known. Opens Updates; never installs.
+  function updateNote(st) {
+    if (!st || !st.update_available || PATH === "/settings/updates") return null;
+    return h("p.notice", { id: "update-notice" }, h("b", "FoilGateway " + st.update_available + " is available. "),
+      h("a", { href: "/settings/updates" }, "Open Updates"));
+  }
   function pendingNote(st) {
-    const a = auditNote(st);
+    const a = [auditNote(st), updateNote(st)];
     if (!st.pending) return a;
-    return [a, h("p.notice", "A change is waiting to be kept (" + st.pending.what + "). It goes back in " + st.pending.left + " s unless this browser confirms it.", " ",
+    return [...a, h("p.notice", "A change is waiting to be kept (" + st.pending.what + "). It goes back in " + st.pending.left + " s unless this browser confirms it.", " ",
       h("button.small", { onclick: async () => { await api("/api/confirm", {}); refresh(); } }, "Keep it"))];
   }
   function pathNote(st) {
@@ -1789,7 +1795,7 @@
               notes ? h("pre.help-pre", { style: "white-space:pre-wrap;max-height:none" }, notes)
                 : h("p.empty", "Check Now to load the latest release notes."))),
             panel("About Updates", null,
-              h("p.hint", "FoilGateway checks GitHub Releases once a day and when you tap Check Now. Installs only when you ask. After Install Update, the previous version is kept for Roll Back To Previous Version. If this page does not come back after a restart, the previous version is restored automatically.")))));
+              h("p.hint", "FoilGateway checks GitHub Releases shortly after it starts, every hour after that, and when you tap Check Now. If a check fails it tries again sooner. Installs only when you ask. After Install Update, the previous version is kept for Roll Back To Previous Version. If this page does not come back after a restart, the previous version is restored automatically.")))));
     });
   }
   function updateInstallAsk(u) {
@@ -1861,7 +1867,7 @@
         searchBox("help-q", helpQ, (v) => { helpQ = v; refresh(); }, "Search Help"),
         h("a.btn.quiet", { href: "/s/manual.html", download: "foilgateway-manual.html" }, "Download Manual"));
       render(
-        header("Settings · Help", st),
+        header("Settings · Help", st), updateNote(st),
         h("p.hint", "Copyright (C) 2026 iBGeek · Manual matches this build."),
         h("div.body.one", grow(panel("Help", tools, h("div.help-layout", tabs, h("div.help-scroll.fillin", { "data-k": "help-scroll" }, article))))));
     });
@@ -1878,7 +1884,7 @@
       } catch (e) {}
       const kv = (label, val) => h("div.kv-row", h("span.mute", label), h("span", val || h("span.mute", "—")));
       render(
-        header("Settings · About", s),
+        header("Settings · About", s), updateNote(s),
         h("div.body.two",
           h("div.col", { "data-k": "about-l" },
             panel("FoilGateway Network", h("a.btn.quiet", { href: "/s/manual.html", download: "foilgateway-manual.html" }, "Download Manual"),

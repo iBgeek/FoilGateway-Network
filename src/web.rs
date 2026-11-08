@@ -1076,6 +1076,8 @@ fn status(app: &App, user: &str) -> Value {
         "admin_from": if admin_from_wan { "both" } else { "lan" },
         "admin_nudge": admin_nudge,
         "white_expiry": white_expiry,
+        // Newer release already known from the last check (memory only; no GitHub call, no update confirm).
+        "update_available": crate::updater::available(),
     })
 }
 
@@ -1361,10 +1363,13 @@ fn rollback_version(app: &Arc<App>, user: &str) -> Resp {
     if !supervised() {
         return bad("Nothing would start FoilGateway again here (it isn't running as its service), so nothing was changed.");
     }
+    // Same slot as Check Now / Install Update: no rollback while either runs, and neither starts during it.
+    let slot = match crate::updater::begin_rollback() { Ok(s) => s, Err(e) => return bad(&e) };
     let _ = app.policy.read().unwrap().save(&app.policy_path());
     app.log.note("setting", &format!("{user} went back to FoilGateway {}.", prev.version));
     let app = app.clone();
     std::thread::spawn(move || {
+        let _slot = slot;
         std::thread::sleep(std::time::Duration::from_millis(800));
         // Held to the end, so nothing saves over settings put back below.
         let _hold = app.policy.write().unwrap();
@@ -3257,6 +3262,12 @@ mod real_api_tests {
             assert!(std::fs::read_to_string("/proc/self/uid_map").unwrap().split_whitespace().collect::<Vec<_>>().last()==Some(&"1"));
             assert!(!std::path::Path::new("/run/systemd/private").exists());
             let worker=a.clone();std::thread::spawn(move||loop {worker.poll_detection();std::thread::sleep(Duration::from_secs(2));});
+        }
+        if let (Ok(url),Ok(ca))=(std::env::var("FOILGW_TEST_UPDATE_API"),std::env::var("FOILGW_TEST_UPDATE_CA_DER")) {
+            // Local TLS release fixture only (test build); short timings stand in for the hourly schedule.
+            assert!(url.starts_with("https://localhost:"));
+            crate::updater::set_test_api(url,std::fs::read(ca).unwrap());crate::updater::load_state(&a.dir);
+            crate::updater::start_checker(a.dir.clone(),crate::updater::Timing{first:Duration::from_secs(1),every:Duration::from_secs(3),retry:Duration::from_secs(1)});
         }
         let tls=cert(&a.dir).unwrap();let listener=TcpListener::bind("127.0.0.1:18843").unwrap();println!("LOCAL_API_READY {}",a.dir);
         for tcp in listener.incoming().flatten(){let(a,tls)=(a.clone(),tls.clone());std::thread::spawn(move||{let _=handle(&a,tls,tcp);});}

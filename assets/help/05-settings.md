@@ -78,9 +78,11 @@ Which Dashboard cards are on. The server stores choices by card id. Turning a ca
 
 **Buttons:**
 
-- **Check Now** - asks GitHub for the latest release right away. A daily check also runs in the background.
+- **Check Now** - asks GitHub for the latest release right away. FoilGateway also checks shortly after it starts and every hour. If a check fails, it tries again sooner.
 - **Install Update** - downloads the matching binary and web package, checks SHA256SUMS, installs into the version slots, and restarts. Shown only when a newer release is available. A confirm lists the version change and that the gateway restarts.
 - **Roll Back To Previous Version** - puts back the version kept from the last update and restarts. Shown when a previous slot exists.
+
+When a newer version is available, a notice shows at the top of every page. Open Updates on the notice goes to this page; it does not install anything.
 
 If this page does not come back after Install Update, FoilGateway restores the previous version within the undo timer. Updates never install by themselves.
 
