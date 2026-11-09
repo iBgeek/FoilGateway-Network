@@ -8,6 +8,8 @@ FoilGateway connects between your router and your network. Your router, DHCP and
 
 Everything downstream of the LAN port is protected. Anything upstream of the WAN port is not.
 
+[If FoilGateway is useful to you, consider starring the repository on GitHub.](https://github.com/iBgeek/FoilGateway-Network)
+
 ## Features
 
 - **Protection Mode** - Normal, Audit, Local Network Only, Block Everything
