@@ -54,7 +54,9 @@ Release assets (also attached to each [GitHub Release](https://github.com/iBgeek
 
 If the settings page does not come back after Install Update, FoilGateway restores the previous version within the undo timer.
 
-Running the install command again also upgrades in place and keeps your settings.
+**If the built in update does not complete, running the install command again also upgrades in place and keeps your settings.**
+
+
 
 ## Manual
 
