@@ -44,6 +44,12 @@ pub struct Dest {
     pub last_sent: i64,
     #[serde(default)]
     pub last_result: String,
+    /// SHA-256 fingerprint of the receiver's certificate, as colon hex, or
+    /// empty. When set, only that certificate is accepted, in place of the
+    /// public certificate authorities, so a receiver with its own
+    /// self-signed certificate can be used.
+    #[serde(default)]
+    pub pin: String,
 }
 
 #[derive(Serialize, Deserialize, Default)]
@@ -316,7 +322,108 @@ fn agent() -> ureq::Agent {
         .build()
 }
 
+/// A certificate fingerprint as uppercase colon hex. Accepts hex with or
+/// without colons or spaces; empty stays empty.
+pub fn norm_pin(pin: &str) -> Result<String, String> {
+    let hex: String = pin.chars().filter(|c| !matches!(c, ':' | ' ' | '-')).collect();
+    if hex.is_empty() {
+        return Ok(String::new());
+    }
+    if hex.len() != 64 || !hex.chars().all(|c| c.is_ascii_hexdigit()) {
+        return Err("A certificate fingerprint is 64 hex characters (SHA-256), with or without colons.".into());
+    }
+    let up = hex.to_ascii_uppercase();
+    Ok(up.as_bytes().chunks(2).map(|c| std::str::from_utf8(c).unwrap_or("")).collect::<Vec<_>>().join(":"))
+}
+
+/// The pin to save for an address: refused on an http:// address.
+pub fn check_pin(url: &str, pin: &str) -> Result<String, String> {
+    let pin = norm_pin(pin)?;
+    if !pin.is_empty() && !url.starts_with("https://") {
+        return Err("A certificate fingerprint needs an https:// address.".into());
+    }
+    Ok(pin)
+}
+
+fn pin_bytes(pin: &str) -> Vec<u8> {
+    pin.split(':').filter_map(|b| u8::from_str_radix(b, 16).ok()).collect()
+}
+
+/// Accepts only the certificate whose SHA-256 matches the pin. The
+/// handshake signature is still checked with that certificate's key.
+#[derive(Debug)]
+struct PinVerifier {
+    pin: Vec<u8>,
+    provider: std::sync::Arc<rustls::crypto::CryptoProvider>,
+}
+
+impl rustls::client::danger::ServerCertVerifier for PinVerifier {
+    fn verify_server_cert(
+        &self,
+        end_entity: &rustls::pki_types::CertificateDer<'_>,
+        _intermediates: &[rustls::pki_types::CertificateDer<'_>],
+        _server_name: &rustls::pki_types::ServerName<'_>,
+        _ocsp: &[u8],
+        _now: rustls::pki_types::UnixTime,
+    ) -> Result<rustls::client::danger::ServerCertVerified, rustls::Error> {
+        let got = ring::digest::digest(&ring::digest::SHA256, end_entity.as_ref());
+        if !self.pin.is_empty() && got.as_ref() == self.pin.as_slice() {
+            Ok(rustls::client::danger::ServerCertVerified::assertion())
+        } else {
+            Err(rustls::Error::General("certificate fingerprint doesn't match".into()))
+        }
+    }
+
+    fn verify_tls12_signature(
+        &self,
+        message: &[u8],
+        cert: &rustls::pki_types::CertificateDer<'_>,
+        dss: &rustls::DigitallySignedStruct,
+    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        rustls::crypto::verify_tls12_signature(message, cert, dss, &self.provider.signature_verification_algorithms)
+    }
+
+    fn verify_tls13_signature(
+        &self,
+        message: &[u8],
+        cert: &rustls::pki_types::CertificateDer<'_>,
+        dss: &rustls::DigitallySignedStruct,
+    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        rustls::crypto::verify_tls13_signature(message, cert, dss, &self.provider.signature_verification_algorithms)
+    }
+
+    fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
+        self.provider.signature_verification_algorithms.supported_schemes()
+    }
+}
+
+/// An agent that trusts only the certificate with this fingerprint.
+fn pinned_agent(pin: &str) -> Result<ureq::Agent, String> {
+    let provider = std::sync::Arc::new(rustls::crypto::ring::default_provider());
+    let verifier = PinVerifier { pin: pin_bytes(pin), provider: provider.clone() };
+    let cfg = rustls::ClientConfig::builder_with_provider(provider)
+        .with_safe_default_protocol_versions()
+        .map_err(|_| "The secure connection couldn't be set up.".to_string())?
+        .dangerous()
+        .with_custom_certificate_verifier(std::sync::Arc::new(verifier))
+        .with_no_client_auth();
+    Ok(ureq::AgentBuilder::new()
+        .timeout_connect(Duration::from_secs(5))
+        .timeout(Duration::from_secs(10))
+        .redirects(0)
+        .user_agent(concat!("FoilGateway/", env!("CARGO_PKG_VERSION")))
+        .tls_config(std::sync::Arc::new(cfg))
+        .build())
+}
+
 fn post(agent: &ureq::Agent, d: &Dest, ev: &str, body: &str) -> Result<(), String> {
+    let pinned;
+    let agent = if d.pin.is_empty() {
+        agent
+    } else {
+        pinned = pinned_agent(&d.pin)?;
+        &pinned
+    };
     let ts = now();
     let r = agent
         .post(&d.url)
@@ -328,6 +435,7 @@ fn post(agent: &ureq::Agent, d: &Dest, ev: &str, body: &str) -> Result<(), Strin
     match r {
         Ok(_) => Ok(()),
         Err(ureq::Error::Status(code, _)) => Err(format!("The address answered {code}.")),
+        Err(e) if !d.pin.is_empty() && e.to_string().contains("fingerprint") => Err("The address's certificate doesn't match the fingerprint.".into()),
         Err(e) => Err(match e.kind() {
             ureq::ErrorKind::Dns => "The address name couldn't be found.".into(),
             ureq::ErrorKind::ConnectionFailed => "Couldn't connect to the address.".into(),
@@ -454,7 +562,7 @@ pub fn view() -> Value {
     let dests: Vec<Value> = lock(&h.saved)
         .dests
         .iter()
-        .map(|d| json!({"id": d.id, "name": d.name, "url": d.url, "events": d.events, "secret_made": d.secret_made, "last_sent": d.last_sent, "last_result": d.last_result}))
+        .map(|d| json!({"id": d.id, "name": d.name, "url": d.url, "events": d.events, "secret_made": d.secret_made, "last_sent": d.last_sent, "last_result": d.last_result, "pin": d.pin}))
         .collect();
     let recent: Vec<Sent> = lock(&h.recent).iter().cloned().collect();
     json!({"dests": dests, "recent": recent, "events": events_json()})
@@ -478,6 +586,7 @@ pub fn change(b: &Value) -> Result<(Value, String), String> {
             let url = s("url");
             check_name(&name)?;
             check_url(&url)?;
+            let pin = check_pin(&url, &s("pin"))?;
             let mut events: Vec<String> = Vec::new();
             for e in b["events"].as_array().map(Vec::as_slice).unwrap_or(&[]) {
                 let e = e.as_str().unwrap_or("");
@@ -497,12 +606,12 @@ pub fn change(b: &Value) -> Result<(Value, String), String> {
                     return Err(format!("You can have up to {MAX_DESTS} destinations."));
                 }
                 let new_secret = random_hex(32)?;
-                st.dests.push(Dest { id: random_hex(8)?, name: name.clone(), url, secret: new_secret.clone(), secret_made: now(), events, ..Default::default() });
+                st.dests.push(Dest { id: random_hex(8)?, name: name.clone(), url, secret: new_secret.clone(), secret_made: now(), events, pin, ..Default::default() });
                 secret = Some(new_secret);
                 line = format!("added notification destination {name}");
             } else {
                 let d = st.dests.iter_mut().find(|d| d.id == id).ok_or("No such destination.")?;
-                (d.name, d.url, d.events) = (name.clone(), url, events);
+                (d.name, d.url, d.events, d.pin) = (name.clone(), url, events, pin);
                 line = format!("changed notification destination {name}");
             }
             save(&h.path, &st)?;
@@ -698,5 +807,121 @@ mod tests {
         change(&json!({"action": "remove", "id": id})).unwrap();
         assert!(view()["dests"].as_array().unwrap().is_empty());
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// A TLS receiver with a fresh self-signed certificate. Returns its
+    /// port, the certificate's fingerprint, and the requests it took.
+    fn tls_receiver() -> (u16, String, std::sync::Arc<Mutex<Vec<String>>>) {
+        use std::io::{Read, Write};
+        let c = rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
+        let fp = ring::digest::digest(&ring::digest::SHA256, c.cert.der().as_ref());
+        let fp: String = fp.as_ref().iter().map(|b| format!("{b:02x}")).collect();
+        let key = rustls::pki_types::PrivateKeyDer::Pkcs8(c.key_pair.serialize_der().into());
+        let cfg = std::sync::Arc::new(
+            rustls::ServerConfig::builder_with_provider(std::sync::Arc::new(rustls::crypto::ring::default_provider()))
+                .with_safe_default_protocol_versions().unwrap().with_no_client_auth()
+                .with_single_cert(vec![c.cert.der().clone()], key).unwrap(),
+        );
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = l.local_addr().unwrap().port();
+        let got = std::sync::Arc::new(Mutex::new(Vec::new()));
+        let g = got.clone();
+        std::thread::spawn(move || {
+            for s in l.incoming().flatten() {
+                let (g, cfg) = (g.clone(), cfg.clone());
+                std::thread::spawn(move || {
+                    let _ = s.set_read_timeout(Some(Duration::from_secs(5)));
+                    let mut t = rustls::StreamOwned::new(rustls::ServerConnection::new(cfg).unwrap(), s);
+                    let mut req = Vec::new();
+                    let mut b = [0u8; 1];
+                    while !req.ends_with(b"\r\n\r\n") {
+                        if t.read_exact(&mut b).is_err() { return; }
+                        req.push(b[0]);
+                    }
+                    let head = String::from_utf8_lossy(&req).to_string();
+                    let len = head.lines().find_map(|l| l.to_ascii_lowercase().strip_prefix("content-length:").map(|v| v.trim().parse::<usize>().unwrap_or(0))).unwrap_or(0);
+                    let mut body = vec![0u8; len];
+                    if t.read_exact(&mut body).is_err() { return; }
+                    lock(&g).push(head + &String::from_utf8_lossy(&body));
+                    let _ = t.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+                    let _ = t.flush();
+                    t.conn.send_close_notify();
+                    let _ = t.flush();
+                });
+            }
+        });
+        (port, fp, got)
+    }
+
+    fn dest(port: u16, pin: &str) -> Dest {
+        Dest { id: "d1".into(), name: "Jarvis".into(), url: format!("https://127.0.0.1:{port}/foilgateway/hook"), secret: "s".repeat(64), pin: pin.into(), ..Default::default() }
+    }
+
+    #[test]
+    fn a_pinned_self_signed_receiver_gets_the_signed_message() {
+        let (port, fp, got) = tls_receiver();
+        let pin = norm_pin(&fp).unwrap();
+        post(&agent(), &dest(port, &pin), "test", r#"{"event":"test"}"#).unwrap();
+        let req = lock(&got).join("\n");
+        assert!(req.starts_with("POST /foilgateway/hook "));
+        assert!(req.contains("X-FoilGateway-Event: test"));
+        assert!(req.contains("X-FoilGateway-Signature: sha256="));
+        assert!(req.ends_with(r#"{"event":"test"}"#));
+    }
+
+    #[test]
+    fn a_wrong_pin_is_refused_and_nothing_is_sent() {
+        let (port, fp, got) = tls_receiver();
+        let mut wrong = fp.into_bytes();
+        wrong[0] = if wrong[0] == b'0' { b'1' } else { b'0' };
+        let pin = norm_pin(std::str::from_utf8(&wrong).unwrap()).unwrap();
+        let e = post(&agent(), &dest(port, &pin), "test", "{}").unwrap_err();
+        assert_eq!(e, "The address's certificate doesn't match the fingerprint.");
+        assert!(lock(&got).is_empty());
+    }
+
+    #[test]
+    fn without_a_pin_a_self_signed_receiver_is_refused() {
+        let (port, _, got) = tls_receiver();
+        assert!(post(&agent(), &dest(port, ""), "test", "{}").is_err());
+        assert!(lock(&got).is_empty());
+    }
+
+    #[test]
+    fn pins_are_normalized_and_need_https() {
+        let hex = "ab".repeat(32);
+        let want = vec!["AB"; 32].join(":");
+        assert_eq!(norm_pin(&hex).unwrap(), want);
+        assert_eq!(norm_pin(&want.to_lowercase()).unwrap(), want);
+        assert_eq!(norm_pin(" ").unwrap(), "");
+        assert!(norm_pin("abc").is_err());
+        assert!(norm_pin(&"zz".repeat(32)).is_err());
+        assert_eq!(check_pin("https://192.168.1.20:8798/foilgateway/hook", &hex).unwrap(), want);
+        assert!(check_pin("http://192.168.1.20:8797/foilgateway/hook", &hex).is_err());
+        assert_eq!(check_pin("http://192.168.1.20:8797/x", "").unwrap(), "");
+    }
+
+    #[test]
+    fn a_1_2_0_notify_file_still_loads() {
+        let old = r#"{"dests":[{"id":"a1","name":"Jarvis","url":"http://192.168.1.20:8797/foilgateway/hook","secret":"x","secret_made":1,"events":["look"],"last_sent":0,"last_result":""}],"update_sent":""}"#;
+        let s: Saved = serde_json::from_str(old).unwrap();
+        assert_eq!(s.dests[0].pin, "");
+        assert_eq!(s.dests[0].events, vec!["look".to_string()]);
+    }
+
+    /// Sends one signed test message with this build's notify code to a
+    /// real receiver. Run by hand: FG_E2E_URL, FG_E2E_PIN and
+    /// FG_E2E_SECRET_FILE (the secret is read from the file, never printed).
+    #[test]
+    #[ignore]
+    fn e2e_send_test_message() {
+        let url = std::env::var("FG_E2E_URL").unwrap();
+        let pin = check_pin(&url, &std::env::var("FG_E2E_PIN").unwrap()).unwrap();
+        let secret = std::fs::read_to_string(std::env::var("FG_E2E_SECRET_FILE").unwrap()).unwrap().trim().to_string();
+        let d = Dest { id: "e2e".into(), name: "Jarvis".into(), url, secret, pin, ..Default::default() };
+        let body = json!({"gateway": "FoilGateway", "version": env!("CARGO_PKG_VERSION"), "event": "test", "title": "Test", "text": "This is a test message from FoilGateway.", "device": "", "at": now()}).to_string();
+        let r = post(&agent(), &d, "test", &body);
+        println!("e2e delivery: {r:?}");
+        r.unwrap();
     }
 }

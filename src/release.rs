@@ -221,11 +221,23 @@ fn promote(slot: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// A downloaded or copied binary often has no execute bit; it needs one to
+/// be asked its version.
+fn make_runnable(bin: &Path) -> Result<(), String> {
+    use std::os::unix::fs::PermissionsExt;
+    let mode = fs::metadata(bin).map_err(|e| format!("{}: {e}", bin.display()))?.permissions().mode();
+    if mode & 0o111 == 0 {
+        fs::set_permissions(bin, fs::Permissions::from_mode(0o755)).map_err(|e| format!("couldn't make {} runnable: {e}", bin.display()))?;
+    }
+    Ok(())
+}
+
 /// `foilgw update <binary> [web]`: keep what's installed, then install the new one.
 pub fn update(new_bin: &Path, web: Option<&Path>) -> Result<String, String> {
     if !new_bin.is_file() {
         return Err(format!("{} isn't there", new_bin.display()));
     }
+    make_runnable(new_bin)?;
     let new = probe(new_bin);
     if new.version == "unknown" {
         return Err(format!("{} doesn't run as foilgw here", new_bin.display()));
@@ -289,6 +301,22 @@ pub fn rollback() -> Result<String, String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_downloaded_binary_without_the_execute_bit_still_runs() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("foilgw-runnable-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let bin = dir.join("foilgw-riscv64");
+        std::fs::write(&bin, "#!/bin/sh\n[ \"$1\" = version ] && echo 'foilgw 9.9.9'\n").unwrap();
+        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o644)).unwrap();
+        assert_eq!(probe(&bin).version, "unknown", "a 0644 file can't run, as the bug showed");
+        make_runnable(&bin).unwrap();
+        assert_eq!(std::fs::metadata(&bin).unwrap().permissions().mode() & 0o777, 0o755);
+        assert_eq!(probe(&bin).version, "9.9.9");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     use super::*;
 
     #[test]

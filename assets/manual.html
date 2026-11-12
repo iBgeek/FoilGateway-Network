@@ -15,7 +15,7 @@ code { background:#10243a; padding:1px 5px; border-radius:4px; font-size:.92em; 
 .help-table th:first-child, .help-table td:first-child { white-space:nowrap; }
 .meta { color:var(--dim); font-size:.9rem; margin-bottom:2rem; }
 hr.chap { border:0; border-top:1px solid var(--line); margin:2.5rem 0; }
-</style></head><body><main><h1>FoilGateway Network - Help Manual</h1><p class="meta">Copyright (C) 2026 iBGeek · Version 1.2.0</p><section id="getting-started"><h1>Getting Started</h1>
+</style></head><body><main><h1>FoilGateway Network - Help Manual</h1><p class="meta">Copyright (C) 2026 iBGeek · Version 1.2.1</p><section id="getting-started"><h1>Getting Started</h1>
 <p>Copyright (C) 2026 iBGeek</p>
 <h2>What FoilGateway Does</h2>
 <p><strong>FoilGateway Network</strong> - a bridge between the WAN port and the LAN port. Traffic that crosses that path can be watched, logged, and blocked. Your router still hands out addresses. The gateway gets its own address from the router.</p>
@@ -476,6 +476,9 @@ hr.chap { border:0; border-top:1px solid var(--line); margin:2.5rem 0; }
 </ul>
 <p>When a newer version is available, a notice shows at the top of every page. Open Updates on the notice goes to this page; it does not install anything.</p>
 <p>If this page does not come back after Install Update, FoilGateway restores the previous version within the undo timer. Updates never install by themselves.</p>
+<p>FoilGateway installs its own updates. If an update ever has a problem, sign in to the gateway over SSH and run this command. It updates FoilGateway and keeps your settings:</p>
+<pre class="help-pre"><code>curl -fsSL https://github.com/iBgeek/FoilGateway-Network/releases/latest/download/install.sh | sudo sh</code></pre>
+<p>If you are signed in as root, leave out sudo.</p>
 <p><strong>Opening it:</strong> Settings → Updates.</p>
 <h2>Help</h2>
 <p>Settings → Help. Tabbed categories matching this manual, search, Download Manual.</p>

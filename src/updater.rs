@@ -345,7 +345,29 @@ pub(crate) fn set_test_api(url: String, ca_der: Vec<u8>) {
     *TEST_API.lock().unwrap() = Some((url, ca_der));
 }
 
+/// FOILGW_UPDATE_FEED points update checks at a local test feed. Only a
+/// plain http://127.0.0.1 address is honoured, so it can't send a real
+/// gateway anywhere else.
+fn local_feed() -> Option<String> {
+    let f = std::env::var("FOILGW_UPDATE_FEED").ok()?;
+    loopback_http(&f).then_some(f)
+}
+
+/// http://127.0.0.1[:port]/path and nothing else (no user part, no other host).
+fn loopback_http(u: &str) -> bool {
+    let Some(rest) = u.strip_prefix("http://127.0.0.1") else { return false };
+    let (port, path) = match rest.find('/') {
+        Some(i) => (&rest[..i], &rest[i..]),
+        None => (rest, ""),
+    };
+    let port_ok = port.is_empty() || (port.len() > 1 && port.starts_with(':') && port[1..].chars().all(|c| c.is_ascii_digit()));
+    port_ok && !u.contains('@') && !path.contains('\\') && !u.chars().any(|c| c.is_whitespace() || c.is_control())
+}
+
 fn api_client() -> Result<(String, ureq::Agent), String> {
+    if let Some(feed) = local_feed() {
+        return Ok((feed, check_agent().build()));
+    }
     #[cfg(test)]
     if let Some((url, ca)) = TEST_API.lock().unwrap().clone() {
         let mut roots = rustls::RootCertStore::empty();
@@ -455,6 +477,9 @@ fn fetch_latest() -> Result<CheckState, CheckError> {
     let bin_url = asset_url(&assets, bin_name)?;
     let web_url = asset_url(&assets, "foilgw-web.tar.gz")?;
     let sums_url = asset_url(&assets, "SHA256SUMS")?;
+    if local_feed().is_some() && ![&bin_url, &web_url, &sums_url].iter().all(|u| loopback_http(u)) {
+        return Err(String::from("A local test feed may only point at http://127.0.0.1.").into());
+    }
     Ok(CheckState {
         last_checked: unix_now(),
         newer: compare_versions(release::VERSION, &tag) < 0,
@@ -581,6 +606,18 @@ pub fn install(dir: &str, rollback_secs: u64) -> Result<String, String> {
             cleanup(&tmp);
             set_progress("Failed", "", e.clone(), false);
             e
+        })?;
+    }
+
+    // A download is saved without the execute bit; the new binary has to
+    // run to be checked and installed.
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&bin_path, fs::Permissions::from_mode(0o755)).map_err(|e| {
+            cleanup(&tmp);
+            let m = format!("Could not make the downloaded {bin_name} runnable: {e}");
+            set_progress("Failed", "", m.clone(), false);
+            m
         })?;
     }
 
@@ -980,5 +1017,31 @@ mod check_schedule {
         assert_eq!(f.hits.load(Ordering::SeqCst), 6);
         assert_eq!(available().as_deref(), Some("99.0.0"));
         assert!(not_busy());
+    }
+
+    /// The Install Update path end to end against a local feed: check, then
+    /// install. Run by hand with FOILGW_UPDATE_FEED, FOILGW_BIN, FOILGW_LIB,
+    /// FOILGW_WEB, FOILGW_STATE and FOILGW_E2E_DIR set to a scratch root.
+    #[test]
+    #[ignore]
+    fn e2e_install_from_local_feed() {
+        let dir = std::env::var("FOILGW_E2E_DIR").unwrap();
+        let s = check_now(&dir).unwrap();
+        println!("check: latest {} newer {}", s.latest, s.newer);
+        assert!(s.newer);
+        let r = install(&dir, 180);
+        println!("install: {r:?}");
+        println!("progress: {}", progress_json());
+        r.unwrap();
+    }
+
+    #[test]
+    fn the_test_feed_is_only_honoured_on_this_machine() {
+        assert!(loopback_http("http://127.0.0.1:18951/latest.json"));
+        assert!(loopback_http("http://127.0.0.1/latest.json"));
+        for bad in ["http://127.0.0.1.evil.example/x", "http://127.0.0.1:80@evil.example/x", "https://127.0.0.1:1/x", "http://192.168.1.10:8000/x", "http://localhost:1/x", "http://127.0.0.1:/x", "http://127.0.0.1:1 /x"] {
+            assert!(!loopback_http(bad), "{bad}");
+        }
+        assert!(std::env::var("FOILGW_UPDATE_FEED").is_err() || local_feed().is_some() == loopback_http(&std::env::var("FOILGW_UPDATE_FEED").unwrap()));
     }
 }

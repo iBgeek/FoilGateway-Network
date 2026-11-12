@@ -130,6 +130,14 @@ When a newer version is available, a notice shows at the top of every page. Open
 
 If this page does not come back after Install Update, FoilGateway restores the previous version within the undo timer. Updates never install by themselves.
 
+FoilGateway installs its own updates. If an update ever has a problem, sign in to the gateway over SSH and run this command. It updates FoilGateway and keeps your settings:
+
+```
+curl -fsSL https://github.com/iBgeek/FoilGateway-Network/releases/latest/download/install.sh | sudo sh
+```
+
+If you are signed in as root, leave out sudo.
+
 **Opening it:** Settings → Updates.
 
 ## Help

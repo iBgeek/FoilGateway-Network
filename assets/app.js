@@ -2198,7 +2198,7 @@
       statusBox(st);
       if (sel !== "new" && !d.dests.some((x) => x.id === sel)) { sel = d.dests.length ? d.dests[0].id : "new"; draft = null; }
       const saved = d.dests.find((x) => x.id === sel) || { id: "", name: "", url: "", events: ["new_device", "look", "settings", "update", "started"], secret_made: 0 };
-      if (!draft) draft = { name: saved.name, url: saved.url, events: saved.events.slice() };
+      if (!draft) draft = { name: saved.name, url: saved.url, pin: saved.pin || "", events: saved.events.slice() };
       const pick = (id) => { sel = id; draft = null; err.textContent = ""; refresh(); };
       const post = async (body) => {
         err.textContent = "";
@@ -2215,6 +2215,7 @@
         h("td.nowrap", shortWhen(r.at)), h("td.nowrap", r.to), h("td", r.what), sendResult(r)));
       const name = h("input", { id: "nd-name", value: draft.name, style: "width:100%", oninput: (e) => { draft.name = e.target.value; } });
       const url = h("input", { id: "nd-url", value: draft.url, placeholder: "http://192.168.1.40:8797/foilgateway", style: "width:100%", oninput: (e) => { draft.url = e.target.value; } });
+      const pin = h("input", { id: "nd-pin", value: draft.pin, placeholder: "Optional", spellcheck: "false", style: "width:100%", oninput: (e) => { draft.pin = e.target.value; } });
       const evs = d.events.map((ev) => {
         const [label, hint] = EVENT_TEXT[ev.id] || [ev.title, ""];
         const box = h("input", { type: "checkbox", checked: draft.events.includes(ev.id), onchange: (e) => {
@@ -2225,7 +2226,7 @@
       });
       const isNew = sel === "new";
       const save = async () => {
-        const r = await post({ action: "save", id: saved.id, name: draft.name, url: draft.url, events: draft.events });
+        const r = await post({ action: "save", id: saved.id, name: draft.name, url: draft.url, pin: draft.pin, events: draft.events });
         if (!r) return;
         if (isNew) { sel = (r.dests.find((x) => x.name.toLowerCase() === draft.name.trim().toLowerCase()) || {}).id || null; draft = null; secretBox(r.secret); }
         else { draft = null; refresh(); }
@@ -2242,6 +2243,8 @@
             grow(panel(isNew ? "New Destination" : "Destination: " + saved.name, null,
               h("label", { for: "nd-name" }, "Name"), name,
               h("label", { for: "nd-url" }, "Address"), url,
+              h("label", { for: "nd-pin" }, "Certificate fingerprint"), pin,
+              h("p.hint", "Only for an https:// address whose receiver uses its own certificate, such as Jarvis. Paste the SHA-256 fingerprint the receiver shows, with or without colons. The gateway then sends only to that certificate. Leave empty to use the usual public certificates."),
               h("label", "Signing secret"),
               h("div.row", isNew ? h("span.mute", "Made when you save") : [h("span.mute", "Set " + dayOf(saved.secret_made)),
                 h("button.small.quiet", { onclick: () => ask("Make a New Secret?", "The old secret stops working at once. Messages are rejected until the receiver has the new one.", "Make New Secret", async () => { const r = await post({ action: "new_secret", id: saved.id }); if (r) secretBox(r.secret); }) }, "New Secret")]),
@@ -2277,7 +2280,7 @@
             grow(panel("Notifications", null,
               h("p", "Each message is a POST with a JSON body: gateway, version, event, title, text, device and at (Unix time)."),
               h("p", "Headers: ", h("code", "X-FoilGateway-Event"), ", ", h("code", "X-FoilGateway-Timestamp"), " and ", h("code", "X-FoilGateway-Signature"), "."),
-              h("p.hint", "The signature is sha256= followed by the HMAC-SHA256, in hex, of the timestamp, a dot, and the raw body, keyed with the destination's signing secret. Events: " + Object.keys(EVENT_TEXT).join(", ") + ", and test from Send Test. For new_device, look and blocked, the first message for a device goes at once; later ones within 5 minutes come as one message whose text starts with the count."))))));
+              h("p.hint", "The signature is sha256= followed by the HMAC-SHA256, in hex, of the timestamp, a dot, and the raw body, keyed with the destination's signing secret. An https:// destination with a certificate fingerprint is sent only to the certificate whose SHA-256 matches it. Events: " + Object.keys(EVENT_TEXT).join(", ") + ", and test from Send Test. For new_device, look and blocked, the first message for a device goes at once; later ones within 5 minutes come as one message whose text starts with the count."))))));
     });
   }
   // ---------- Settings for custom users: the speed test only ----------
