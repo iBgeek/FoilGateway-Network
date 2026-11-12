@@ -15,7 +15,7 @@ code { background:#10243a; padding:1px 5px; border-radius:4px; font-size:.92em; 
 .help-table th:first-child, .help-table td:first-child { white-space:nowrap; }
 .meta { color:var(--dim); font-size:.9rem; margin-bottom:2rem; }
 hr.chap { border:0; border-top:1px solid var(--line); margin:2.5rem 0; }
-</style></head><body><main><h1>FoilGateway Network - Help Manual</h1><p class="meta">Copyright (C) 2026 iBGeek · Version 1.2.1</p><section id="getting-started"><h1>Getting Started</h1>
+</style></head><body><main><h1>FoilGateway Network - Help Manual</h1><p class="meta">Copyright (C) 2026 iBGeek · Version 1.2.3</p><section id="getting-started"><h1>Getting Started</h1>
 <p>Copyright (C) 2026 iBGeek</p>
 <h2>What FoilGateway Does</h2>
 <p><strong>FoilGateway Network</strong> - a bridge between the WAN port and the LAN port. Traffic that crosses that path can be watched, logged, and blocked. Your router still hands out addresses. The gateway gets its own address from the router.</p>
@@ -92,6 +92,7 @@ hr.chap { border:0; border-top:1px solid var(--line); margin:2.5rem 0; }
 <h3>Alerts</h3>
 <p>Alerts show things that still need attention, such as a new device, an allowed threat-list match in Audit, or a filtering failure. Already stopped traffic does not create a suspicious, new-port or volume-spike warning. Resolved warnings leave Alerts and Needs a Look. Raw history remains under Capture Log → All, and stopped attempts remain under Blocked.</p>
 <p><strong>Clear</strong> on an alert row takes it off the dashboard. <strong>Clear All Shown</strong> clears every alert the list shows right now, so search or filter first to clear only those; it asks before it clears. Cleared alerts stay in the Capture Log, marked handled. Only alerts can be cleared, and only by users allowed to mark alerts handled.</p>
+<p>On a blocked, audit, or alert line with a device, address and port, <strong>Mark Handled</strong> and <strong>Keep It Blocked</strong> stop further alerts for that exact device, address and port. The history stays in the Capture Log. A later attempt to a different port or address still alerts. <strong>Hear About This Again</strong> on that line starts alerts for it again. Changing the device&#x27;s policy, or using Allow or a list change for that address, does the same.</p>
 <p>Refused calls show as one alert per user per 10 minutes, with the count. Each refused call is in the Capture Log. Old port observations without an outcome stay unclassified unless matching inbound drop evidence or a handled decision is available; they are not assumed stopped.</p>
 <h3>Blocked Today</h3>
 <p>The number is today&#x27;s full logged block count. It does not turn high block volume into an attack warning. Click it to open today&#x27;s blocked rows in the Capture Log.</p>

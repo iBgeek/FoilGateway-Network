@@ -161,7 +161,15 @@
       const r = await fetch(path, Object.assign({ credentials: "same-origin", cache: "no-store" }, opt));
       let data = {};
       try { data = await r.json(); } catch (e) { data = {}; }
-      if (r.status === 401 && data.redirect && location.pathname !== data.redirect) { location.href = data.redirect; throw new Error("redirect"); }
+      if (r.status === 401 && data.redirect && location.pathname !== "/login") {
+        let dest = data.redirect;
+        if (dest === "/login" || dest.startsWith("/login?")) {
+          const here = sameSitePath(location.pathname + location.search);
+          if (here && here !== "/login") dest = "/login?next=" + encodeURIComponent(here);
+        }
+        if (location.pathname + location.search !== dest) location.href = dest;
+        throw new Error("redirect");
+      }
       if (!r.ok) throw new Error(data.error || ("The gateway answered " + r.status + "."));
       return data;
     } finally {
@@ -791,8 +799,15 @@
     field.addEventListener("click", () => (wrap.querySelector(".cal") ? closeCal() : draw()));
     return wrap;
   }
-  function ask(title, text, okLabel, onok) {
-    showBox(h("h3", title), h("p", text), h("div.acts", h("button.quiet", { onclick: hideBox }, "Cancel"), h("button", { onclick: () => { hideBox(); onok(); } }, okLabel)));
+  function ask(title, text, okLabel, onok, danger) {
+    showBox(h("h3", title), h("p", text), h("div.acts", h("button.quiet", { onclick: hideBox }, "Cancel"), h("button" + (danger ? ".danger" : ""), { onclick: () => { hideBox(); onok(); } }, okLabel)));
+  }
+  function sameSitePath(p) {
+    if (typeof p !== "string") return "";
+    p = p.trim();
+    if (!p.startsWith("/") || p.startsWith("//") || p.startsWith("/\\")) return "";
+    if (p.includes("\\") || p.includes("://") || /[\s\x00-\x1f\x7f]/.test(p)) return "";
+    return p;
   }
 
   // ---------- Dashboard ----------
@@ -1005,23 +1020,30 @@
       const k = alertKind(a);
       const who = a.label || a.device || "";
       const tip = a.guess ? (" · " + a.guess) : "";
-      let action = null;
-      if (k === "device") action = h("span.go", "Don’t know it? Block All");
-      else if (k === "port") action = h("span.go", "Review on Ports");
-      else if ((a.link || "").startsWith("/devices/troubleshoot")) action = h("span.go", "Open the Troubleshooter");
-      const href = a.link || "/log?kind=alert";
+      const href = a.link || (a.id ? "/?alert=" + a.id : "/log?kind=alert");
       const open = linkOk(href);
-      const line = h(open ? "a.alert" : "div.alert", open ? { href } : null,
+      // An alert opens in a popup over the dashboard; other links go to their page.
+      const pop = a.id && /^\/(\?alert=|log\?focus=)\d+$/.test(href);
+      const line = h(open ? "a.alert" : "div.alert", open ? (pop ? { href: "/?alert=" + a.id, onclick: (e) => { e.preventDefault(); openAlert(a.id); } } : { href }) : null,
         h("span.sev." + (k === "block" ? "bad" : "warn"), ALERT[k]),
         (who ? who + ": " : "") + a.text + tip + " ",
-        open ? action : null, " ",
         h("span.t", when(a.last)), a.count > 1 ? h("span.count", { style: "margin-left:6px" }, "×" + a.count) : null);
       return h("div.alert-row", { "data-key": a._key || alertKey(a) }, line,
         h("button.small.quiet", { perm: "handle_alerts", onclick: () => clearAlerts([a.id]) }, "Clear"));
     });
   }
+  // Fetches one alert's log line and shows it in the popup over the dashboard.
+  async function openAlert(id) {
+    const done = () => { if (new URLSearchParams(location.search).has("alert")) history.replaceState(null, "", "/"); };
+    const d = await api("/api/log?" + new URLSearchParams({ focus: id, limit: 1 }));
+    const r = (d.rows || []).find((x) => x.id === id);
+    if (r) return alertPopup(r, done);
+    showBox(h("h3", "Alert Not Found"), h("p", "That alert is no longer in the Capture Log."), h("div.acts", h("button", { onclick: () => { hideBox(); done(); } }, "Close")));
+  }
   function dashboard() {
     shell("Dashboard");
+    const startAlert = Number(qp0.get("alert")) || 0;
+    if (startAlert) openAlert(startAlert).catch(() => {});
     // One observer for the page: a width change re-spreads the cards
     // without waiting for the next poll.
     new ResizeObserver(() => layCards($(".cards.stats"))).observe(mainEl);
@@ -1655,7 +1677,169 @@
     });
   }
 
+  // Actions for the Capture Log line opened from an alert or a message.
+  function rowName(r) { return r.label || r.device || "This device"; }
+  function rowIp(text) { const m = String(text || "").match(/ from ([0-9a-fA-F:.]+)\.?$/); return m ? m[1] : ""; }
+  function rowPort(r) {
+    const m = String(r.text || "").match(/tried (tcp|udp) (\d+)/i);
+    if (m) return { proto: m[1].toLowerCase(), port: Number(m[2]) };
+    const p = String(r.ports || "").split(",")[0].trim().match(/^(tcp|udp)\s+(\d+)$/i);
+    if (p) return { proto: p[1].toLowerCase(), port: Number(p[2]) };
+    const i = r.info && r.info.ports && r.info.ports[0];
+    return i && i.proto && i.port ? { proto: i.proto, port: i.port } : null;
+  }
+  const ALLOW_IP = { devblock: 1, devlan: 1, telemetry: 1, black: 1, threat: 1, country: 1 };
+  function timesPhrase(r) {
+    const n = r.count || 1;
+    const today = when(r.last).indexOf("Today ") === 0;
+    const times = n === 1 ? "once" : (n + " times");
+    return today ? times + " today" : times;
+  }
+  function destPhrase(r) {
+    const domain = (r.domain || (r.info && r.info.domain) || "").trim();
+    const remote = (r.remote || "").trim();
+    if (domain && remote && domain !== remote) return domain + " (" + remote + ")";
+    return domain || remote || "that address";
+  }
+  function confirmRun(title, text, okLabel, danger, go) {
+    ask(title, text, okLabel, go, danger);
+  }
+  // Block one address or port for one device: adds it to that device's own
+  // deny list and takes it off that device's allow list. Other devices are unchanged.
+  async function blockForDevice(mac, entry) {
+    const d = await api("/api/devices?" + new URLSearchParams({ q: mac, limit: 500 }));
+    const v = (d.devices || []).find((x) => x.mac === mac);
+    if (!v) { showBox(h("h3", "That didn't go in"), h("p", "That device isn't on the gateway any more."), h("div.acts", h("button", { onclick: hideBox }, "OK"))); return; }
+    const deny = (v.deny || []).includes(entry) ? v.deny : (v.deny || []).concat([entry]);
+    return change("/api/device", { mac, deny, allow: (v.allow || []).filter((x) => x !== entry) }, () => {});
+  }
+  function actPanel(r) {
+    // In the alert popup a choice applies at once; the popup closes as it starts.
+    const confirmRun = (title, text, okLabel, danger, go) => go();
+    const name = rowName(r);
+    const mac = r.device || "";
+    const remote = (r.remote || "").trim();
+    const port = rowPort(r);
+    const buttons = [];
+    let says = "";
+    const handled = { perm: "handle_alerts", onclick: () => change("/api/alert", { id: r.id }) };
+    // Allow and Block both settle the alert too, so it doesn't come back for this device, address and port.
+    const settle = (run) => async () => { const res = await run(); if (res !== undefined) await change("/api/alert", { id: r.id }); };
+    const closePort = (pt) => change("/api/ports", { action: "choice", proto: pt.proto, port: pt.port, mac, choice: "block_both" }, () => {});
+    const portTry = r.kind === "device" && / tried (tcp|udp) /i.test(r.text || "");
+    const authIp = (r.kind === "alert" && (/Failed sign-in/.test(r.text) || /wrong API key/.test(r.text))) ? rowIp(r.text) : "";
+    const suspicious = r.kind === "alert" && mac && (r.reason === "surge" || r.reason === "port_sweep" || r.reason === "tcp_failure" || /threat list/.test(r.text || "") || /TCP (destination ports|connection failures)/.test(r.text || ""));
+    const fgProblem = r.kind === "alert" && !authIp && !suspicious && !remote && !mac;
+    if (portTry && port) {
+      says = name + " tried to use " + port.proto + " " + port.port + ", which isn't open for it.";
+      buttons.push(h("button", { perm: "admin", onclick: () => confirmRun("Open " + port.proto + " " + port.port + " for " + name + "?", name + " will accept connections on " + port.proto + " " + port.port + " from the router side until you change it on the Ports page.", "Open Port", false, settle(() => change("/api/ports", { action: "choice", proto: port.proto, port: port.port, mac, choice: "allow" }, () => {}))) }, "Open " + port.proto + " " + port.port + " for " + name));
+      buttons.push(h("button", { perm: "admin", onclick: () => confirmRun("Block " + port.proto + " " + port.port + " for " + name + "?", port.proto + " " + port.port + " stays closed on " + name + " from the router side and the LAN side until you change it on the Ports page. Other devices are not affected.", "Block", true, settle(() => closePort(port))) }, "Block " + port.proto + " " + port.port + " for " + name));
+      buttons.push(h("button.quiet", { perm: "handle_alerts", onclick: async () => { await change("/api/ports", { action: "seen", proto: port.proto, port: port.port, mac }, () => {}); await change("/api/alert", { id: r.id }); } }, "Mark as Looked At"));
+    } else if (r.kind === "device") {
+      const pol = r.policy ? ({ trusted: "Trusted", normal: "Normal", lan_only: "Local Network Only", block: "Block All" }[r.policy] || r.policy) : "Normal";
+      says = name + " is new on the network. It is set to " + pol + ".";
+      const setPol = (policy, title, text, danger, label) => h("button" + (danger ? ".danger" : ".quiet"), { perm: "device_actions", onclick: () => confirmRun(title, text, label, danger, () => change("/api/device", { mac, policy })) }, label);
+      // Trusted and LAN Only / Block change access; Normal can also, so ask for all four.
+      buttons.push(setPol("trusted", "Set " + name + " to Trusted?", name + " skips the Black list, threat lists and countries until you change it on the Devices page.", false, "Trusted"));
+      buttons.push(setPol("normal", "Set " + name + " to Normal?", name + " uses the internet under the network rules.", false, "Normal"));
+      buttons.push(setPol("lan_only", "Set " + name + " to LAN Only?", name + " can reach other devices and the gateway, but not the internet, until you set it back on the Devices page.", false, "LAN Only"));
+      buttons.push(setPol("block", "Block " + name + "?", name + " loses all network access until you set it back on the Devices page.", true, "Block"));
+      buttons.push(h("button.quiet", { perm: "device_actions", onclick: () => {
+        const inp = h("input", { value: name === mac ? "" : name, maxlength: 48, placeholder: "Name" });
+        showBox(h("h3", "Rename " + name + "?"), inp, h("div.acts", h("button.quiet", { onclick: hideBox }, "Cancel"), h("button", { onclick: () => { hideBox(); change("/api/device", { mac, name: inp.value }); } }, "Rename")));
+        inp.focus();
+      } }, "Rename"));
+      buttons.push(h("button", { perm: can("device_actions") ? "device_actions" : "handle_alerts", onclick: () => change(can("device_actions") ? "/api/device" : "/api/alert", can("device_actions") ? { mac, seen: true } : { id: r.id }) }, "Mark Handled"));
+    } else if (authIp) {
+      says = /wrong API key/.test(r.text) ? ("Someone at " + authIp + " used a wrong API key.") : ("Someone at " + authIp + " used a wrong password" + ((r.text.match(/Failed sign-in for (.+) from /) || [])[1] ? " for " + r.text.match(/Failed sign-in for (.+) from /)[1] : "") + ".");
+      buttons.push(h("button.danger", { perm: "block_list", onclick: () => confirmRun("Block " + authIp + "?", "Connections from " + authIp + " are stopped until you take it off the Black list.", "Block", true, () => change("/api/list", { list: "black", add: authIp })) }, "Block " + authIp));
+      buttons.push(h("button", handled, "Mark Handled"));
+    } else if (suspicious) {
+      says = /threat list/.test(r.text || "") ? (name + " contacted an address on a threat list.") : (name + " showed suspicious behavior" + (remote ? " involving " + remote : "") + ".");
+      if (mac && remote) {
+        buttons.push(h("button", { perm: "allow_list", onclick: () => confirmRun("Allow " + remote + " for " + name + "?", remote + " will be allowed for " + name + " only, until you take it off that device's allow list. Other devices are not affected.", "Allow", false, settle(() => change("/api/allow", { mac, reason: "black", remote, proto: (port && port.proto) || "", port: (port && port.port) || 0, permanent: true }, () => {}))) }, "Allow " + remote + " for " + name));
+      }
+      if (mac && remote) {
+        buttons.push(h("button", { perm: ["block_list", "allow_list"], onclick: () => confirmRun("Block " + remote + " for " + name + "?", name + " can't reach " + remote + " until you take it off that device's block list. Other devices are not affected.", "Block", true, settle(() => blockForDevice(mac, remote))) }, "Block " + remote + " for " + name));
+      }
+      if (mac) {
+        buttons.push(h("button.quiet", { perm: "device_actions", onclick: () => confirmRun("Set " + name + " to LAN Only?", name + " can reach other devices and the gateway, but not the internet, until you set it back on the Devices page.", "Set to LAN Only", false, () => change("/api/device", { mac, policy: "lan_only" })) }, "Set " + name + " to LAN Only"));
+        buttons.push(h("button.danger", { perm: "device_actions", onclick: () => confirmRun("Block " + name + "?", name + " loses all network access until you set it back on the Devices page.", "Block", true, () => change("/api/device", { mac, policy: "block" })) }, "Block " + name));
+        buttons.push(h("a.btn.quiet", { perm: "alerts", href: "/devices/troubleshoot?mac=" + encodeURIComponent(mac) }, "Open the Troubleshooter"));
+      }
+      buttons.push(h("button.quiet", handled, "Mark Handled"));
+    } else if (fgProblem || (r.kind === "alert" && !mac && !authIp && !remote)) {
+      const update = /update|previous version failed|checksum/i.test(r.text || "");
+      const cert = /certificate/i.test(r.text || "");
+      says = update ? "The update was not installed. The running version is unchanged." : (r.text || "Something needs a look on the gateway.");
+      if (cert) buttons.push(h("a.btn", { perm: "admin", href: "/settings/certs" }, "Open Certificates"));
+      else if (update) buttons.push(h("a.btn", { perm: "updates_view", href: "/settings/updates" }, "Open Updates"));
+      else buttons.push(h("a.btn", { perm: "firewall_view", href: "/firewall" }, "Open Firewall"));
+      buttons.push(h("button.quiet", handled, "Mark Handled"));
+    } else if (r.kind === "block" || r.kind === "audit" || (r.kind === "alert" && (remote || mac))) {
+      const pt = port ? (port.proto + " " + port.port) : "";
+      says = name + " was stopped from reaching " + destPhrase(r) + (pt ? " on " + pt : "") + ", " + timesPhrase(r) + ".";
+      const reason = r.reason || "black";
+      const pBody = { mac, reason, remote, proto: (port && port.proto) || "", port: (port && port.port) || 0, permanent: true };
+      const allowBtn = (label, text) => h("button", { perm: "allow_list", onclick: () => confirmRun(label + "?", text, "Allow", false, settle(() => change("/api/allow", pBody, () => {}))) }, label);
+      const portOnly = mac && port && (reason === "wan" || reason === "lanport");
+      if (portOnly) {
+        const pt2 = port.proto + " " + port.port;
+        buttons.push(allowBtn("Allow " + pt2 + " for " + name, reason === "wan" ? (name + " will accept connections on " + pt2 + " from the router side until you change it on the Ports page. Other devices are not affected.") : ("Devices on the LAN side may reach " + name + " on " + pt2 + " until you change it on the Ports page. Other devices are not affected.")));
+        buttons.push(h("button", { perm: "admin", onclick: () => confirmRun("Block " + pt2 + " for " + name + "?", pt2 + " stays closed on " + name + " from the router side and the LAN side until you change it on the Ports page. Other devices are not affected.", "Block", true, settle(() => closePort(port))) }, "Block " + pt2 + " for " + name));
+      } else if (mac && remote && (ALLOW_IP[reason] || reason === "devdeny")) {
+        buttons.push(allowBtn("Allow " + remote + " for " + name, remote + " will be allowed for " + name + " only, until you take it off that device's allow list. Other devices are not affected."));
+        buttons.push(h("button", { perm: ["block_list", "allow_list"], onclick: () => confirmRun("Block " + remote + " for " + name + "?", name + " can't reach " + remote + " until you take it off that device's block list. Other devices are not affected.", "Block", true, settle(() => blockForDevice(mac, remote))) }, "Block " + remote + " for " + name));
+      } else if (reason === "mode" || reason === "lanonly") {
+        buttons.push(h("a.btn", { perm: "firewall_view", href: "/firewall" }, "Change the Firewall Mode"));
+      }
+
+      if (r.kind === "alert" || r.kind === "block" || r.kind === "audit") buttons.push(h("button.quiet", handled, "Keep It Blocked"));
+      if (mac) buttons.push(h("button.danger", { perm: "device_actions", onclick: () => confirmRun("Block " + name + "?", name + " loses all network access until you set it back on the Devices page.", "Block", true, () => change("/api/device", { mac, policy: "block" })) }, "Block " + name));
+    } else if (r.kind === "audit") {
+      says = r.text || (name + " would have been stopped.");
+      buttons.push(h("button.quiet", handled, "Keep It Blocked"));
+    } else if ((r.kind === "alert" || r.kind === "device") && !r.handled) {
+      buttons.push(h("button", handled, "Mark Handled"));
+      says = r.text || "This line still needs a look.";
+    }
+    const canQuiet = (r.kind === "alert" || r.kind === "block" || r.kind === "audit") && !!(remote || authIp || r.reason === "auth" || /Failed sign-in|wrong API key/.test(r.text || ""));
+    if (r.quiet) buttons.push(h("button.quiet", { perm: "handle_alerts", onclick: () => change("/api/alert", { id: r.id, action: "hear" }) }, "Hear About This Again"));
+    const shown = buttons.filter(Boolean);
+    if (!shown.length) return null;
+    return h("div.actbox", h("h4", "What to do about this"), says ? h("p", says) : null, h("div.acts", shown), canQuiet ? h("p.hint", "Allow, Block, Mark Handled and Keep It Blocked stop alerts for this device, address and port.") : null);
+  }
+
   // ---------- Capture Log ----------
+  // One alert in a large popup: everything known about it and what can be done.
+  // Any choice applies and closes the popup.
+  function alertPopup(r, closed) {
+    const port = rowPort(r);
+    const close = () => { hideBox(); closed(); };
+    const facts = [
+      ["What happened", r.text || blockWhat(r, r.kind === "audit")],
+      ["Device", (r.label || r.device || "-") + (r.label && r.device && r.label !== r.device ? " (" + r.device + ")" : "")],
+      r.remote ? ["Remote address", r.remote + (r.domain && r.domain !== r.remote ? " (" + r.domain + ")" : "")] : null,
+      port ? ["Port", port.proto + " " + port.port] : null,
+      ["Kind", r.kind],
+      ["First seen", when(r.first)],
+      ["Last seen", when(r.last)],
+      ["Times", String(r.count || 1)],
+      r.handled ? ["Status", "Handled"] : null,
+    ].filter(Boolean);
+    const acts = actPanel(r);
+    showBox(
+      h("h3", (r.kind === "alert" ? "Alert" : r.kind === "device" ? "Device" : "Blocked") + ": " + rowName(r)),
+      h("dl.review", facts.flatMap(([k, v]) => [h("dt", k), h("dd", v)])),
+      acts || h("p.mute", "There is nothing to change for this one."),
+      h("div.acts", h("button.quiet", { onclick: close }, "Close")));
+    const box = overlay.firstChild;
+    if (box) {
+      box.classList.add("big");
+      // A choice in the popup closes it; the change itself carries on.
+      box.addEventListener("click", (e) => { const b = e.target.closest(".actbox button, .actbox a"); if (b) close(); }, true);
+    }
+  }
   function log() {
     shell("Capture Log");
     const qp = new URLSearchParams(location.search);
@@ -1679,6 +1863,7 @@
       keepUrl();
       const args = { kind: kind === "look" ? "look" : kind, q, sort, from, to, limit };
       if (today) args.today = 1;
+      if (focus) args.focus = focus;
       const d = await api("/api/log?" + new URLSearchParams(args));
       statusBox(d.status);
       total = d.total;
@@ -1699,9 +1884,16 @@
             h("span", h("b", "alert"), " · worth a look"),
             h("span", h("b", "device"), " · new or changed")),
           h("div.chips", chip("look", "Needs a Look"), chip("", "All"), chip("block", "Blocked"), chip("device", "Devices"), chip("alert", "Alerts"), chip("audit", "Audit"), chip("dhcp", "DHCP"), chip("setting", "Settings"), chip("download", "Downloads")),
-          scroller("log", more, table(["Last", "First", "Kind", "Device", "What", "Count#", ""], d.rows.map((r) => h("tr" + (r.id === focus ? ".sel" : ""), { "data-key": String(r.id) }, h("td", when(r.last)), h("td.mute", when(r.first)), h("td", r.kind), h("td", r.device || "-"), h("td", blockWhat(r, r.kind === "audit")), h("td.num", r.count), h("td", r.handled ? h("span.pill.handled", "handled") : ""))), "All good, nothing to do.")),
+          scroller("log", more, table(["Last", "First", "Kind", "Device", "What", "Count#", ""], d.rows.flatMap((r) => {
+            return [h("tr" + (r.id === focus ? ".sel" : ""), { "data-key": String(r.id) }, h("td", when(r.last)), h("td.mute", when(r.first)), h("td", r.kind), h("td", r.label || r.device || "-"), h("td", blockWhat(r, r.kind === "audit")), h("td.num", r.count), h("td", r.handled ? h("span.pill.handled", "handled") : ""))];
+          }), "All good, nothing to do.")),
           shownOf(d.rows.length, d.total, "lines. The same thing on the same day is one line with a count")))));
-      if (focus && !focused) { focused = true; mainEl.querySelector("tr.sel")?.scrollIntoView({ block: "center" }); }
+      if (focus && !focused) {
+        focused = true;
+        mainEl.querySelector("tr.sel")?.scrollIntoView({ block: "center" });
+        const r = d.rows.find((x) => x.id === focus);
+        if (r) alertPopup(r, () => { focus = 0; keepUrl(); });
+      }
     });
   }
 
@@ -2496,7 +2688,8 @@
     document.title = "Sign in - FoilGateway";
     const u = h("input", { autocomplete: "username", placeholder: "Name" }), p = h("input", { type: "password", autocomplete: "current-password", placeholder: "Password" });
     const err = h("div.err", { "data-ref": "" });
-    const go = async (e) => { e.preventDefault(); err.textContent = ""; try { await api("/api/login", { user: u.value, password: p.value }); location.href = "/"; } catch (x) { err.textContent = x.message; } };
+    const next = sameSitePath(new URLSearchParams(location.search).get("next") || "") || "/";
+    const go = async (e) => { e.preventDefault(); err.textContent = ""; try { await api("/api/login", { user: u.value, password: p.value }); location.href = next; } catch (x) { err.textContent = x.message; } };
     $("#app").replaceChildren(h("div.solo", h("form.login", { onsubmit: go },
       h("div.brand", h("img", { src: "/s/icon.svg", alt: "" }), h("div", h("b", "FoilGateway"), h("small", "Network edition"))),
       h("section.panel", h("h2", "Sign in"), h("label", "Name"), u, h("label", "Password"), p, err, h("div", { style: "margin-top:12px" }, h("button", { type: "submit" }, "Sign in"))))));

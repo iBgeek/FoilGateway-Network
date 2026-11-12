@@ -1,6 +1,6 @@
 [package]
 name = "foilgateway-network"
-version = "1.2.1"
+version = "1.2.6"
 edition = "2021"
 authors = ["iBGeek"]
 description = "FoilGateway network edition"

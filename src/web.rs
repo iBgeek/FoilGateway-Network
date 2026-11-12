@@ -121,6 +121,66 @@ fn redirect(to: &str) -> Resp {
     r
 }
 
+/// Percent-encode a query value (unreserved and `/` stay as they are).
+fn encode_query(s: &str) -> String {
+    let mut out = String::new();
+    for b in s.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => out.push(b as char),
+            _ => out.push_str(&format!("%{b:02X}")),
+        }
+    }
+    out
+}
+
+/// A same-site path only: starts with a single '/', not '//' or a backslash, no scheme.
+fn same_site_path(p: &str) -> Option<&str> {
+    let p = p.trim();
+    let b = p.as_bytes();
+    if !p.starts_with('/') || p.starts_with("//") || b.get(1) == Some(&b'\\') {
+        return None;
+    }
+    if b.contains(&b'\\') || p.contains("://") {
+        return None;
+    }
+    if b.iter().any(|c| *c < 0x20 || *c == b' ' || *c == 0x7f) {
+        return None;
+    }
+    Some(p)
+}
+
+/// The page the signer-in should return to, from this request's path and query.
+fn request_next(req: &Req) -> Option<String> {
+    if req.path == "/login" || req.path == "/setup" || req.path.starts_with("/api/") || req.path.starts_with("/s/") {
+        return None;
+    }
+    same_site_path(&req.path)?;
+    let mut n = req.path.clone();
+    if !req.query.is_empty() {
+        let mut parts: Vec<String> = req.query.iter().map(|(k, v)| format!("{}={}", encode_query(k), encode_query(v))).collect();
+        parts.sort();
+        n.push('?');
+        n.push_str(&parts.join("&"));
+    }
+    same_site_path(&n).map(str::to_string)
+}
+
+/// `/login`, or `/login?next=` with a same-site path.
+fn login_href(req: &Req) -> String {
+    match request_next(req) {
+        Some(n) => format!("/login?next={}", encode_query(&n)),
+        None => "/login".into(),
+    }
+}
+
+fn login_redirect(req: &Req) -> Resp {
+    redirect(&login_href(req))
+}
+
+fn login_unauthorized(req: &Req) -> Resp {
+    resp(401, "application/json", json!({"error": "Please sign in again.", "redirect": login_href(req)}).to_string())
+}
+
 fn cert(dir: &str) -> Result<Arc<rustls::ServerConfig>, String> {
     crate::certs::startup(dir)?;
     let cfg = rustls::ServerConfig::builder_with_provider(Arc::new(rustls::crypto::ring::default_provider()))
@@ -425,7 +485,7 @@ fn route(app: &Arc<App>, req: &Req) -> Resp {
         return match app.auth.key_login(&key, &req.ip) {
             Ok(who) => guarded(app, req, who, ""),
             Err(e) => {
-                app.log.note("alert", &format!("A wrong API key was used from {}.", req.ip));
+                app.log.auth_alert("", &req.ip, &format!("A wrong API key was used from {}.", req.ip));
                 resp(if e.starts_with("Too many") { 429 } else { 401 }, "application/json", json!({"error": e}).to_string())
             }
         };
@@ -462,7 +522,7 @@ fn route(app: &Arc<App>, req: &Req) -> Resp {
                     r
                 }
                 Err(e) => {
-                    app.log.note("alert", &format!("Failed sign-in for {} from {}.", s(&b, "user"), req.ip));
+                    app.log.auth_alert(&s(&b, "user"), &req.ip, &format!("Failed sign-in for {} from {}.", s(&b, "user"), req.ip));
                     let mut r = bad(&e);
                     if e.starts_with("Too many") {
                         r.status = 429;
@@ -474,7 +534,7 @@ fn route(app: &Arc<App>, req: &Req) -> Resp {
         _ => {}
     }
     let Some(user) = user else {
-        return if p.starts_with("/api/") { resp(401, "application/json", json!({"error": "Please sign in again.", "redirect": "/login"}).to_string()) } else { redirect("/login") };
+        return if p.starts_with("/api/") { login_unauthorized(req) } else { login_redirect(req) };
     };
     // Any signed-in request after a change shows the browser still gets in.
     if p == "/api/confirm" {
@@ -505,7 +565,7 @@ fn route(app: &Arc<App>, req: &Req) -> Resp {
     if let Some(r) = spa_page(p) {
         return r;
     }
-    let Some(who) = app.auth.who(&user) else { return resp(401, "application/json", json!({"error": "Please sign in again.", "redirect": "/login"}).to_string()) };
+    let Some(who) = app.auth.who(&user) else { return login_unauthorized(req) };
     guarded(app, req, who, &token)
 }
 
@@ -529,8 +589,8 @@ pub const ROUTES: &[(&str, &str, &str, &str)] = &[
     ("POST", "/api/device", "device_actions", "Block or allow a device, rename it, or mark it seen. Send mac with policy, name or seen. Sending allow or deny lists also needs the allow list or block list permission."),
     ("POST", "/api/list", "block_list", "Add or remove a Black list entry. Send list \"black\" with add or remove set to the entry. With list \"white\" it needs the allow list permission. Adding an entry that is on the other list moves it, so that needs both permissions."),
     ("POST", "/api/allow", "allow_list", "Allow something the Troubleshooter found. With reason \"devdeny\" it takes an entry off the device's deny list, so it also needs the block list permission."),
-    ("POST", "/api/alert", "handle_alerts", "Mark one alert handled. Send id. Only dashboard alerts (alert and device lines) can be cleared."),
-    ("POST", "/api/alerts/clear", "handle_alerts", "Mark several alerts handled. Send ids, up to 500. If any id isn't a dashboard alert (alert or device line), nothing is cleared."),
+    ("POST", "/api/alert", "handle_alerts", "Mark one alert, device, block or audit line handled. Send id. When the line has a device, address and port (or a sign-in address and user), later matches stay in the log but are not raised again. Send action \"hear\" with id to allow those alerts again."),
+    ("POST", "/api/alerts/clear", "handle_alerts", "Mark several alerts handled. Send ids, up to 500. If any id isn't a dashboard alert (alert or device line), nothing is cleared. Lines with a device, address and port also stay quiet later, as with /api/alert."),
     ("POST", "/api/audit", "handle_alerts", "Keep an audit finding as allowed. Send action \"keep\"."),
     ("POST", "/api/ports", "handle_alerts", "Mark a port as seen. Send action \"seen\"."),
     ("POST", "/api/speed-test", "speed_run", "Run or cancel a speed test. Send action \"run\" or \"cancel\"."),
@@ -697,10 +757,27 @@ fn guarded(app: &Arc<App>, req: &Req, who: crate::auth::Who, token: &str) -> Res
             let b = body(req);
             match b["id"].as_i64() {
                 Some(id) => {
-                    if !app.log.are_alerts(&[id]) {
-                        return bad("Only alerts can be cleared.");
+                    if !app.log.can_handle(&[id]) {
+                        return bad("That line can't be marked handled.");
                     }
-                    app.log.handle_id(id);
+                    if s(&b, "action") == "hear" {
+                        let notes = app.log.quiet_notes(&[id]);
+                        if !app.log.hear_again(id) {
+                            return bad("Nothing to change.");
+                        }
+                        let what = if notes.is_empty() { "that line".into() } else { notes.join("; ") };
+                        app.log.note("setting", &format!("{user} allowed alerts again for {what}."));
+                        return ok(json!({ "ok": true }));
+                    }
+                    let n = app.log.handle_id(id);
+                    let notes = app.log.quiet_notes(&[id]);
+                    if notes.is_empty() {
+                        if n > 0 {
+                            app.log.note("setting", &format!("{user} marked a log line handled."));
+                        }
+                    } else {
+                        app.log.note("setting", &format!("{user} stopped alerts for {}.", notes.join("; ")));
+                    }
                     ok(json!({ "ok": true }))
                 }
                 None => bad("Which alert?"),
@@ -716,7 +793,9 @@ fn guarded(app: &Arc<App>, req: &Req, who: crate::auth::Who, token: &str) -> Res
                 return bad("Only alerts can be cleared.");
             }
             let n = app.log.handle_ids(&ids);
-            app.log.note("setting", &format!("{user} cleared {n} alert{} from the dashboard.", if n == 1 { "" } else { "s" }));
+            let notes = app.log.quiet_notes(&ids);
+            let extra = if notes.is_empty() { String::new() } else { format!(" Stopped later alerts for {}.", notes.join("; ")) };
+            app.log.note("setting", &format!("{user} cleared {n} alert{} from the dashboard.{extra}", if n == 1 { "" } else { "s" }));
             ok(json!({ "ok": true, "cleared": n }))
         }
         ("GET", "/api/firewall") => ok(firewall(app, &user, req.query.contains_key("rules"))),
@@ -734,7 +813,13 @@ fn guarded(app: &Arc<App>, req: &Req, who: crate::auth::Who, token: &str) -> Res
                 since = since.max(app.midnight());
             }
             let q = qs(req, "q");
-            let (rows, total) = app.log.page(&kind, &q, since, until, &qs(req, "sort"), qn(req, "offset", 0, i64::MAX), qn(req, "limit", 200, 1000));
+            let focus = qn(req, "focus", 0, i64::MAX);
+            let (mut rows, total) = app.log.page(&kind, &q, since, until, &qs(req, "sort"), qn(req, "offset", 0, i64::MAX), qn(req, "limit", 200, 1000));
+            if focus > 0 && !rows.iter().any(|r| r.id == focus) {
+                if let Some(row) = app.log.get(focus) {
+                    rows.insert(0, row);
+                }
+            }
             let download_bytes = app.log.download_bytes(&kind, &q, since, until);
             ok(json!({ "status": status(app, &user), "rows": log_rows(app, rows), "total": total, "offset": off, "download_bytes": download_bytes }))
         }
@@ -1424,23 +1509,10 @@ fn true_alerts(rows: Vec<crate::caplog::Row>, settled: &std::collections::HashSe
         .collect()
 }
 
-/// Where clicking an alert takes the owner: the thing it's about.
+/// Where clicking an alert takes the owner: the dashboard with that alert
+/// open in a popup, with the actions for it.
 fn alert_link(r: &crate::caplog::Row) -> String {
-    let dev = !r.device.is_empty();
-    if r.kind == "device" && dev {
-        // "... tried tcp 8080 on <device>. It's on the Ports list."
-        let w: Vec<&str> = r.text.split_whitespace().collect();
-        if let Some(i) = w.iter().position(|x| *x == "tried") {
-            if let (Some(proto), Some(port)) = (w.get(i + 1), w.get(i + 2).and_then(|p| p.parse::<u16>().ok())) {
-                return format!("/ports/devices?q={}&port={proto}-{port}", r.device);
-            }
-        }
-        return format!("/devices#{}", r.device);
-    }
-    if r.kind == "alert" && dev && (r.reason == "surge" || r.text.contains("threat list")) {
-        return format!("/devices/troubleshoot?mac={}", r.device);
-    }
-    format!("/log?kind={}&focus={}", r.kind, r.id)
+    format!("/?alert={}", r.id)
 }
 
 fn speed_test_change(app:&Arc<App>,req:&Req,user:&str)->Resp {
@@ -2015,7 +2087,12 @@ fn device_change(app: &App, req: &Req) -> Resp {
     if b["forget"].as_bool() == Some(true) {
         let gone = pol.devices.remove(&mac);
         let Some(d) = gone else { return bad("Unknown device.") };
-        return done(app.change(None, pol, &format!("forgot {}", App::device_label(&d, &mac))));
+        let label = App::device_label(&d, &mac);
+        let r = app.change(None, pol, &format!("forgot {label}"));
+        if r.is_ok() {
+            app.log.clear_quiet_device(&mac);
+        }
+        return done(r);
     }
     let Some(d) = pol.devices.get_mut(&mac) else { return bad("Unknown device.") };
     let before = d.clone();
@@ -2049,6 +2126,7 @@ fn device_change(app: &App, req: &Req) -> Resp {
         d.new = false;
         what.push(format!("{} marked as looked at", App::device_label(d, &mac)));
     }
+    let policy_changed = d.policy != before.policy;
     let only_cosmetic = d.policy == before.policy && d.telemetry == before.telemetry && d.allow == before.allow && d.deny == before.deny;
     let entries: Vec<String> = d.allow.iter().chain(&d.deny).cloned().collect();
     let handled = !d.new;
@@ -2070,6 +2148,9 @@ fn device_change(app: &App, req: &Req) -> Resp {
     let r = app.change(None, pol, &what.join(", "));
     if r.is_ok() && handled {
         app.log.handle_device(&mac);
+    }
+    if r.is_ok() && policy_changed {
+        app.log.clear_quiet_device(&mac);
     }
     done(r)
 }
@@ -2485,7 +2566,13 @@ fn list_change(app: &App, req: &Req, who: &crate::auth::Who) -> Resp {
     } else {
         return bad("Nothing to change.");
     };
-    done(app.change(None, pol, &what))
+    let r = app.change(None, pol, &what);
+    if r.is_ok() && b["add"].is_string() {
+        for raw in s(&b, "add").split(['\n', ',', ' ']).filter(|x| !x.trim().is_empty()) {
+            app.log.clear_quiet_remote(raw.trim());
+        }
+    }
+    done(r)
 }
 
 fn timezones() -> Vec<String> {
@@ -2806,17 +2893,26 @@ fn block_info(app: &App, ix: &crate::about::Index, f: &BlockFacts) -> Value {
 fn log_rows(app: &App, rows: Vec<crate::caplog::Row>) -> Vec<Value> {
     // Labels are copied out so the policy lock isn't held below: block_info
     // reads the policy again, and a second read waits behind a queued writer.
-    let labels: HashMap<String, String> = app.policy.read().unwrap().devices.iter().map(|(m, d)| (m.clone(), App::device_label(d, m))).collect();
+    let labels: HashMap<String, (String, Value)> = app.policy.read().unwrap().devices.iter().map(|(m, d)| (m.clone(), (App::device_label(d, m), json!(d.policy)))).collect();
     let need = rows.iter().any(|r| !r.remote.is_empty());
     let ix = if need { Some(app.list_index()) } else { None };
     rows.into_iter()
         .map(|r| {
             let mut v = json!(r);
+            if let Some((label, policy)) = labels.get(r.device.as_str()) {
+                v["label"] = json!(label);
+                v["policy"] = policy.clone();
+            } else if !r.device.is_empty() {
+                v["label"] = json!(r.device);
+            }
             if let (Some(ix), false) = (&ix, r.remote.is_empty()) {
-                let label = labels.get(r.device.as_str()).cloned().unwrap_or_else(|| if r.device.is_empty() { "A device".into() } else { r.device.clone() });
+                let label = v["label"].as_str().unwrap_or("A device").to_string();
                 let ports = crate::caplog::port_list(&r.ports);
                 let info = block_info(app, ix, &BlockFacts { mac: &r.device, label: &label, reason: &r.reason, remote: &r.remote, dir: &r.dir, ports: &ports, domain: &r.domain });
                 v["info"] = info;
+            }
+            if app.log.row_is_quiet(&r) {
+                v["quiet"] = json!(true);
             }
             v
         })
@@ -2939,6 +3035,17 @@ fn allow_change(app: &Arc<App>, req: &Req, user: &str) -> Resp {
         if !d.allow.contains(&net) {
             d.allow.push(net.clone());
         }
+        // An Allow for this device also takes off any deny entry of its own
+        // that covers this address, so nothing for this device still blocks it.
+        {
+            let ip: Option<std::net::IpAddr> = net.parse().ok();
+            let seen = app.seen.lock().unwrap();
+            d.deny.retain(|e| match crate::policy::parse_entry(e) {
+                Ok(crate::policy::Entry::Net(n)) => !ip.is_some_and(|ip| net_has(&n, ip)),
+                Ok(crate::policy::Entry::Site(s)) => !seen.of(&s).contains(&net),
+                _ => true,
+            });
+        }
         if until > 0 {
             d.allow_until.insert(net.clone(), until);
         } else {
@@ -2966,6 +3073,10 @@ fn allow_change(app: &Arc<App>, req: &Req, user: &str) -> Resp {
         format!("deny list entry for {remote} taken off {label} by {user}")
     } else {
         // wan or lanport, no setting for every device (checked above).
+        // This device's own deny entry for the same port would still block it.
+        if let Some(d) = pol.devices.get_mut(&mac) {
+            d.deny.retain(|e| !matches!(crate::policy::parse_entry(e), Ok(crate::policy::Entry::Port(p, n)) if p == proto && n == port));
+        }
         let e = match pol.inbound.iter_mut().find(|i| i.same(&proto, port, &mac)) {
             Some(e) => e,
             None => {
@@ -2988,6 +3099,11 @@ fn allow_change(app: &Arc<App>, req: &Req, user: &str) -> Resp {
         app.log.handle_audit(&mac, &remote, p, n, &reasons);
         if p.is_empty(){app.log.handle_resolved_alerts(&mac,&remote);}else{app.log.handle_stopped_alerts(&mac,&crate::caplog::Meta{remote:remote.clone(),proto:p.into(),port:n,dir:if reason=="wan"{"in"}else{"out"}.into(),..Default::default()});}
         app.log.handle_surge(&mac);
+        if ip_reasons.contains(&reason.as_str()) {
+            app.log.clear_quiet_tuple(&mac, &remote, "", 0);
+        } else {
+            app.log.clear_quiet_tuple(&mac, &remote, &proto, port);
+        }
     }
     done(r)
 }

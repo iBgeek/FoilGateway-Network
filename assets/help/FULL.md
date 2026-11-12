@@ -88,6 +88,8 @@ Alerts show things that still need attention, such as a new device, an allowed t
 
 **Clear** on an alert row takes it off the dashboard. **Clear All Shown** clears every alert the list shows right now, so search or filter first to clear only those; it asks before it clears. Cleared alerts stay in the Capture Log, marked handled. Only alerts can be cleared, and only by users allowed to mark alerts handled.
 
+On a blocked, audit, or alert line with a device, address and port, **Mark Handled** and **Keep It Blocked** stop further alerts for that exact device, address and port. The history stays in the Capture Log. A later attempt to a different port or address still alerts. **Hear About This Again** on that line starts alerts for it again. Changing the device's policy, or using Allow or a list change for that address, does the same.
+
 Refused calls show as one alert per user per 10 minutes, with the count. Each refused call is in the Capture Log. Old port observations without an outcome stay unclassified unless matching inbound drop evidence or a handled decision is available; they are not assumed stopped.
 
 ### Blocked Today

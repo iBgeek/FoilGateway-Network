@@ -85,6 +85,122 @@ pub fn now() -> i64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0)
 }
 
+fn quiet_exists(db: &Connection, device: &str, remote: &str, proto: &str, port: u16, dir: &str, extra: &str) -> bool {
+    db.query_row(
+        "SELECT 1 FROM quiet WHERE device=?1 AND remote=?2 AND proto=?3 AND port=?4 AND dir=?5 AND extra=?6",
+        params![device, remote, proto, port, dir, extra],
+        |_| Ok(()),
+    )
+    .is_ok()
+}
+
+fn quiet_exists_tx(tx: &rusqlite::Transaction, device: &str, remote: &str, proto: &str, port: u16, dir: &str, extra: &str) -> bool {
+    quiet_exists(tx, device, remote, proto, port, dir, extra)
+}
+
+fn silence_put(db: &Connection, device: &str, remote: &str, proto: &str, port: u16, dir: &str, extra: &str) {
+    if remote.is_empty() && extra.is_empty() {
+        return;
+    }
+    let _ = db.execute(
+        "INSERT OR IGNORE INTO quiet (device, remote, proto, port, dir, extra, at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        params![device, remote, proto, port, dir, extra, now()],
+    );
+}
+
+/// Sign-in alerts: (user, source address) from the kept fields or the line's text.
+fn auth_from_row(row: &Row) -> Option<(String, String)> {
+    if row.reason == "auth" && !row.remote.is_empty() {
+        return Some((row.domain.clone(), row.remote.clone()));
+    }
+    auth_from_text(&row.text)
+}
+
+fn auth_from_text(text: &str) -> Option<(String, String)> {
+    if let Some(rest) = text.strip_prefix("Failed sign-in for ") {
+        if let Some((user, ip)) = rest.rsplit_once(" from ") {
+            let ip = ip.trim().trim_end_matches('.').to_string();
+            if !ip.is_empty() {
+                return Some((user.to_string(), ip));
+            }
+        }
+    }
+    if let Some(rest) = text.strip_prefix("A wrong API key was used from ") {
+        let ip = rest.trim().trim_end_matches('.').to_string();
+        if !ip.is_empty() {
+            return Some((String::new(), ip));
+        }
+    }
+    None
+}
+
+fn row_quiet_keys(row: &Row) -> Vec<(String, String, String, u16, String, String)> {
+    if let Some((user, ip)) = auth_from_row(row) {
+        return vec![(String::new(), ip, String::new(), 0, String::new(), user)];
+    }
+    if row.remote.is_empty() {
+        return vec![];
+    }
+    let ports = port_list(&row.ports);
+    if ports.is_empty() {
+        return vec![];
+    }
+    ports
+        .into_iter()
+        .map(|(proto, port)| (row.device.clone(), row.remote.clone(), proto, port, row.dir.clone(), String::new()))
+        .collect()
+}
+
+fn silence_row(db: &Connection, row: &Row) {
+    for (device, remote, proto, port, dir, extra) in row_quiet_keys(row) {
+        silence_put(db, &device, &remote, &proto, port, &dir, &extra);
+    }
+}
+
+fn quiet_phrases(row: &Row) -> Vec<String> {
+    row_quiet_keys(row)
+        .into_iter()
+        .map(|(device, remote, proto, port, dir, extra)| {
+            if !extra.is_empty() || (device.is_empty() && port == 0) {
+                if extra.is_empty() {
+                    format!("sign-ins from {remote}")
+                } else {
+                    format!("sign-ins for {extra} from {remote}")
+                }
+            } else {
+                let who = if device.is_empty() { "a device".into() } else { device };
+                let port_s = if port == 0 { proto } else { format!("{proto} {port}") };
+                let way = if dir.is_empty() { String::new() } else { format!(" {dir}") };
+                format!("{who} to {remote} on {port_s}{way}")
+            }
+        })
+        .collect()
+}
+
+fn get_row(db: &Connection, id: i64) -> Option<Row> {
+    db.query_row(
+        "SELECT id, first, last, kind, device, text, count, handled, COALESCE(reason, ''), COALESCE(remote, ''), COALESCE(dir, ''), CASE WHEN COALESCE(ports,'') != '' THEN ports WHEN port > 0 THEN proto || ' ' || port ELSE COALESCE(proto, '') END, COALESCE(domain, ''), COALESCE(outcome,'unknown') FROM events WHERE id = ?1",
+        params![id],
+        |r| Ok(Row {
+            id: r.get(0)?,
+            first: r.get(1)?,
+            last: r.get(2)?,
+            kind: r.get(3)?,
+            device: r.get(4)?,
+            text: r.get(5)?,
+            count: r.get(6)?,
+            handled: r.get::<_, i64>(7)? != 0,
+            reason: r.get(8)?,
+            remote: r.get(9)?,
+            dir: r.get(10)?,
+            ports: r.get(11)?,
+            domain: r.get(12)?,
+            outcome: r.get(13)?,
+        }),
+    )
+    .ok()
+}
+
 impl Log {
     pub fn open(path: &str) -> Result<Log, String> {
         let db = Connection::open(path).map_err(|e| format!("can't open the log: {e}"))?;
@@ -116,6 +232,21 @@ impl Log {
         db.execute_batch("CREATE INDEX IF NOT EXISTS ev_flow ON events(device, remote, kind);").map_err(|e|e.to_string())?;
         db.execute_batch("CREATE TABLE IF NOT EXISTS pattern_support(alert_id INTEGER, port INTEGER, dir TEXT, handled INTEGER DEFAULT 0, PRIMARY KEY(alert_id,port,dir)); UPDATE events SET outcome='dropped' WHERE kind='block'; UPDATE events SET outcome='audit_allowed' WHERE kind='audit';").map_err(|e|e.to_string())?;
         db.execute_batch("CREATE TABLE IF NOT EXISTS pattern_flows(alert_id INTEGER, flow TEXT, port INTEGER, dir TEXT, handled INTEGER DEFAULT 0, PRIMARY KEY(alert_id,flow)); CREATE INDEX IF NOT EXISTS pattern_flow_key ON pattern_flows(flow,handled);").map_err(|e|e.to_string())?;
+        // Lasting "don't tell me again" rules: one row per device, address, port and direction.
+        db.execute_batch(
+            "CREATE TABLE IF NOT EXISTS quiet (
+               device TEXT NOT NULL,
+               remote TEXT NOT NULL,
+               proto TEXT NOT NULL,
+               port INTEGER NOT NULL,
+               dir TEXT NOT NULL,
+               extra TEXT NOT NULL,
+               at INTEGER NOT NULL,
+               PRIMARY KEY (device, remote, proto, port, dir, extra)
+             );
+             CREATE INDEX IF NOT EXISTS quiet_lookup ON quiet(device, remote, proto, port);",
+        )
+        .map_err(|e| e.to_string())?;
         let log=Log { db: Mutex::new(db) };log.reconcile_stopped_ports();Ok(log)
     }
 
@@ -159,9 +290,6 @@ impl Log {
                 "INSERT INTO events (first, last, day, kind, device, text, key, count, reason, remote, proto, port, dir, ports, domain) VALUES (?1, ?1, ?2, ?3, ?4, ?5, ?6, 1, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
                 params![at, day, kind, device, text, key, m.reason, m.remote, m.proto, m.port, m.dir, item, m.domain],
             );
-        } else {
-            // An audit-allowed warning becomes actionable again if the traffic returns.
-            let _ = db.execute("UPDATE events SET handled = 0 WHERE day = ?1 AND key = ?2 AND kind IN ('audit','alert')", params![day, key]);
         }
         let outcome=if kind=="block"{"dropped"}else if kind=="audit"{"audit_allowed"}else{match m.outcome.as_str(){"forwarded"=>"forwarded","audit_allowed"=>"audit_allowed","dropped"=>"dropped",_=>"unknown"}};
         let _=db.execute("UPDATE events SET outcome=?1 WHERE day=?2 AND key=?3",params![outcome,day,key]);
@@ -169,10 +297,25 @@ impl Log {
             let prefix=format!("{} on the router side tried {} {} on %",m.remote,m.proto,m.port);
             let _=db.execute("UPDATE events SET handled=1 WHERE kind='device' AND handled=0 AND device=?1 AND COALESCE(reason,'')='' AND text LIKE ?2 AND last<=?3",params![device,prefix,at]);
         }
+        let id = found.as_ref().map(|(id, _, _)| *id).unwrap_or_else(|| db.last_insert_rowid());
+        let quiet_this = quiet_exists(&db, device, &m.remote, &m.proto, m.port, &m.dir, "");
+        let all_quiet = match get_row(&db, id) {
+            Some(row) => {
+                let keys = row_quiet_keys(&row);
+                !keys.is_empty() && keys.iter().all(|(dev, rem, proto, port, dir, extra)| quiet_exists(&db, dev, rem, proto, *port, dir, extra))
+            }
+            None => quiet_this,
+        };
+        if all_quiet {
+            let _ = db.execute("UPDATE events SET handled = 1 WHERE id = ?1", params![id]);
+        } else if found.is_some() && !quiet_this {
+            // A repeat is worth a look again only when this exact tuple was not marked quiet.
+            let _ = db.execute("UPDATE events SET handled = 0 WHERE id = ?1 AND kind IN ('audit','alert','block')", params![id]);
+        }
         drop(db);
-        // Stopped alerts and port sightings stay off the dashboard, so they don't go out as "needs a look".
-        if !(kind == "alert" && outcome == "dropped") && !(kind == "device" && m.reason == "port_observed") {
-            crate::notify::event(kind, device, text);
+        // Stopped alerts, port sightings and quiet tuples stay off the dashboard and out of notifications.
+        if !quiet_this && !(kind == "alert" && outcome == "dropped") && !(kind == "device" && m.reason == "port_observed") {
+            crate::notify::event_at(kind, device, text, Some(id));
         }
     }
 
@@ -267,33 +410,60 @@ impl Log {
         for signal in &a.support {
             tx.execute("INSERT OR IGNORE INTO pattern_flows(alert_id,flow,port,dir) VALUES(?1,?2,?3,?4)",params![id,signal.key(),signal.dport,dir]).map_err(|e|e.to_string())?;
         }
+        let quiet_all = if a.ports.is_empty() {
+            quiet_exists_tx(&tx, &a.mac, &a.remote, "tcp", port, dir, "")
+        } else {
+            a.ports.iter().all(|p| quiet_exists_tx(&tx, &a.mac, &a.remote, "tcp", *p, dir, ""))
+        };
+        if quiet_all {
+            tx.execute("UPDATE events SET handled = 1 WHERE id = ?1", params![id]).map_err(|e|e.to_string())?;
+        }
         tx.commit().map_err(|e|e.to_string())?;
         drop(db);
-        crate::notify::event("alert", &a.mac, text);
+        if !quiet_all {
+            crate::notify::event_at("alert", &a.mac, text, Some(id));
+        }
         Ok(true)
     }
 
-    /// Marks one alert (or any line) dealt with.
-    pub fn handle_id(&self, id: i64) {
-        let _ = self.db().execute("UPDATE events SET handled = 1 WHERE id = ?1 AND kind IN ('alert', 'device')", params![id]);
+    /// Marks one alert, device, block or audit line dealt with, and records a
+    /// lasting quiet rule when the line has a device, address and port.
+    pub fn handle_id(&self, id: i64) -> usize {
+        self.handle_ids(&[id])
     }
 
     /// True when every id is a line the dashboard shows as an alert
-    /// (kind alert or device). Only those can be cleared.
+    /// (kind alert or device). Only those can be cleared in bulk.
     pub fn are_alerts(&self, ids: &[i64]) -> bool {
-        let db = self.db();
-        let Ok(mut st) = db.prepare("SELECT 1 FROM events WHERE id = ?1 AND kind IN ('alert', 'device')") else { return false };
-        ids.iter().all(|id| st.exists(params![id]).unwrap_or(false))
+        self.ids_are(ids, "('alert', 'device')")
     }
 
-    /// Marks several lines handled at once. Returns how many changed.
+    /// True when every id is a line Mark Handled / Keep It Blocked may take.
+    pub fn can_handle(&self, ids: &[i64]) -> bool {
+        self.ids_are(ids, "('alert', 'device', 'block', 'audit')")
+    }
+
+    fn ids_are(&self, ids: &[i64], kinds: &str) -> bool {
+        let db = self.db();
+        let Ok(mut st) = db.prepare(&format!("SELECT 1 FROM events WHERE id = ?1 AND kind IN {kinds}")) else { return false };
+        !ids.is_empty() && ids.iter().all(|id| st.exists(params![id]).unwrap_or(false))
+    }
+
+    /// Marks several lines handled at once. Records a quiet rule for each
+    /// line that has a device, address and port (or a sign-in address and user).
+    /// Returns how many lines changed to handled.
     pub fn handle_ids(&self, ids: &[i64]) -> usize {
         let mut db = self.db();
         let Ok(tx) = db.transaction() else { return 0 };
         let mut n = 0;
-        if let Ok(mut st) = tx.prepare("UPDATE events SET handled = 1 WHERE id = ?1 AND handled = 0 AND kind IN ('alert', 'device')") {
+        if let Ok(mut st) = tx.prepare("UPDATE events SET handled = 1 WHERE id = ?1 AND handled = 0 AND kind IN ('alert', 'device', 'block', 'audit')") {
             for id in ids {
                 n += st.execute(params![id]).unwrap_or(0);
+            }
+        }
+        for id in ids {
+            if let Some(row) = get_row(&tx, *id) {
+                silence_row(&tx, &row);
             }
         }
         if tx.commit().is_err() {
@@ -302,9 +472,99 @@ impl Log {
         n
     }
 
+    /// Short phrases for the quiet rules saved from these lines, for the log.
+    pub fn quiet_notes(&self, ids: &[i64]) -> Vec<String> {
+        let db = self.db();
+        let mut out = Vec::new();
+        for id in ids {
+            if let Some(row) = get_row(&db, *id) {
+                out.extend(quiet_phrases(&row));
+            }
+        }
+        out
+    }
+
+    /// Whether any quiet rule matches this line's device, address and port.
+    pub fn row_is_quiet(&self, row: &Row) -> bool {
+        let db = self.db();
+        row_quiet_keys(row).into_iter().any(|(device, remote, proto, port, dir, extra)| quiet_exists(&db, &device, &remote, &proto, port, &dir, &extra))
+    }
+
+    /// Removes quiet rules for this line and marks it unhandled, so later
+    /// matches can raise an alert again.
+    pub fn hear_again(&self, id: i64) -> bool {
+        let mut db = self.db();
+        let Ok(tx) = db.transaction() else { return false };
+        let Some(row) = get_row(&tx, id) else { return false };
+        for (device, remote, proto, port, dir, extra) in row_quiet_keys(&row) {
+            let _ = tx.execute("DELETE FROM quiet WHERE device=?1 AND remote=?2 AND proto=?3 AND port=?4 AND dir=?5 AND extra=?6", params![device, remote, proto, port, dir, extra]);
+        }
+        let n = tx.execute("UPDATE events SET handled = 0 WHERE id = ?1 AND kind IN ('alert', 'device', 'block', 'audit')", params![id]).unwrap_or(0);
+        tx.commit().is_ok() && (n > 0 || !row_quiet_keys(&row).is_empty())
+    }
+
     /// Marks a device's sudden-blocks alerts dealt with.
     pub fn handle_surge(&self, device: &str) {
         let _ = self.db().execute("UPDATE events SET handled = 1 WHERE device = ?1 AND kind = 'alert' AND reason = 'surge'", params![device]);
+    }
+
+    /// Drops every quiet rule for a device (policy changed or the device was forgotten).
+    pub fn clear_quiet_device(&self, device: &str) -> usize {
+        if device.is_empty() {
+            return 0;
+        }
+        self.db().execute("DELETE FROM quiet WHERE device = ?1", params![device]).unwrap_or(0)
+    }
+
+    /// Drops quiet rules for this device and address, or one port when given.
+    pub fn clear_quiet_tuple(&self, device: &str, remote: &str, proto: &str, port: u16) -> usize {
+        if remote.is_empty() {
+            return 0;
+        }
+        let db = self.db();
+        if proto.is_empty() || port == 0 {
+            db.execute("DELETE FROM quiet WHERE device = ?1 AND remote = ?2", params![device, remote]).unwrap_or(0)
+        } else {
+            db.execute("DELETE FROM quiet WHERE device = ?1 AND remote = ?2 AND proto = ?3 AND port = ?4", params![device, remote, proto, port]).unwrap_or(0)
+        }
+    }
+
+    /// Drops quiet rules for an address on every device (the address was allowed or blocked on a list).
+    pub fn clear_quiet_remote(&self, remote: &str) -> usize {
+        if remote.is_empty() {
+            return 0;
+        }
+        self.db().execute("DELETE FROM quiet WHERE remote = ?1", params![remote]).unwrap_or(0)
+    }
+
+    /// A failed sign-in or wrong API key, with the source address (and user, when known) kept apart so a quiet rule can target them.
+    pub fn auth_alert(&self, user: &str, ip: &str, text: &str) {
+        if ip.is_empty() {
+            self.note("alert", text);
+            return;
+        }
+        let at = now();
+        let day = (at / 86400).to_string();
+        let key = format!("alert||auth|{user}|{ip}");
+        let db = self.db();
+        let bumped = db.execute("UPDATE events SET count = count + 1, last = ?1, text = ?2 WHERE day = ?3 AND key = ?4", params![at, text, day, key]).unwrap_or(0);
+        if bumped == 0 {
+            let _ = db.execute(
+                "INSERT INTO events (first, last, day, kind, device, text, key, count, reason, remote, domain) VALUES (?1, ?1, ?2, 'alert', '', ?3, ?4, 1, 'auth', ?5, ?6)",
+                params![at, day, text, key, ip, user],
+            );
+        }
+        let id: i64 = db.query_row("SELECT id FROM events WHERE day = ?1 AND key = ?2", params![day, key], |r| r.get(0)).unwrap_or(0);
+        let quiet = quiet_exists(&db, "", ip, "", 0, "", user);
+        if quiet {
+            let _ = db.execute("UPDATE events SET handled = 1 WHERE id = ?1", params![id]);
+        } else if bumped > 0 {
+            let _ = db.execute("UPDATE events SET handled = 0 WHERE id = ?1", params![id]);
+        }
+        drop(db);
+        if !quiet {
+            crate::notify::event_at("alert", "", text, (id > 0).then_some(id));
+        }
     }
 
     fn db(&self) -> std::sync::MutexGuard<'_, Connection> {
@@ -325,7 +585,9 @@ impl Log {
                 params![at, day, kind, device, text, key],
             );
         }
-        crate::notify::event(kind, device, text);
+        let id: i64 = db.query_row("SELECT id FROM events WHERE day = ?1 AND key = ?2", params![day, key], |r| r.get(0)).unwrap_or(0);
+        drop(db);
+        crate::notify::event_at(kind, device, text, (id > 0).then_some(id));
     }
 
     pub fn note(&self, kind: &str, text: &str) {
@@ -367,7 +629,7 @@ impl Log {
         );
         let id = db.last_insert_rowid();
         drop(db);
-        crate::notify::event("alert", "", text);
+        crate::notify::event_at("alert", "", text, Some(id));
         id
     }
 
@@ -435,6 +697,31 @@ impl Log {
             }
         }
         (rows,total)
+    }
+
+    /// One line by id, or none if it isn't there.
+    pub fn get(&self, id: i64) -> Option<Row> {
+        let db = self.db();
+        db.query_row(
+            "SELECT id, first, last, kind, device, text, count, handled, COALESCE(reason, ''), COALESCE(remote, ''), COALESCE(dir, ''), CASE WHEN COALESCE(ports,'') != '' THEN ports WHEN port > 0 THEN proto || ' ' || port ELSE COALESCE(proto, '') END, COALESCE(domain, ''), COALESCE(outcome,'unknown') FROM events WHERE id = ?1",
+            params![id],
+            |r| Ok(Row {
+                id: r.get(0)?,
+                first: r.get(1)?,
+                last: r.get(2)?,
+                kind: r.get(3)?,
+                device: r.get(4)?,
+                text: r.get(5)?,
+                count: r.get(6)?,
+                handled: r.get::<_, i64>(7)? != 0,
+                reason: r.get(8)?,
+                remote: r.get(9)?,
+                dir: r.get(10)?,
+                ports: r.get(11)?,
+                domain: r.get(12)?,
+                outcome: r.get(13)?,
+            }),
+        ).ok()
     }
 
     /// Total blocked packets logged since `since`, the number shown on every page.

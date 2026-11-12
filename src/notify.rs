@@ -131,7 +131,7 @@ pub fn start(dir: &str) {
             let Some(h) = hub() else { return };
             let due = group_flush(&mut lock(&h.groups), now());
             for (ev, device, text) in due {
-                send_event(h, &ev, &device, &text, now());
+                send_event(h, &ev, &device, &text, now(), None);
             }
         }).ok();
     }
@@ -161,14 +161,22 @@ pub fn classify(kind: &str, text: &str) -> Option<&'static str> {
 }
 
 /// Called for every new Capture Log line. Never blocks on the network.
+#[allow(dead_code)]
 pub fn event(kind: &str, device: &str, text: &str) {
+    event_at(kind, device, text, None);
+}
+
+/// Same as `event`, and when `id` is set the message includes that log line
+/// and a link to it.
+pub fn event_at(kind: &str, device: &str, text: &str, id: Option<i64>) {
     let Some(h) = hub() else { return };
     let Some(ev) = classify(kind, text) else { return };
     let at = now();
     if GROUPED.contains(&ev) {
         let out = group_step(&mut lock(&h.groups), ev, device, text, at);
         for (ev, device, text) in out {
-            send_event(h, &ev, &device, &text, at);
+            let item = if text.contains(" more like this in ") { None } else { id };
+            send_event(h, &ev, &device, &text, at, item);
         }
         return;
     }
@@ -183,7 +191,7 @@ pub fn event(kind: &str, device: &str, text: &str) {
         }
         seen.insert(key, at);
     }
-    send_event(h, ev, device, text, at);
+    send_event(h, ev, device, text, at, id);
 }
 
 /// Called after an update check finds a newer version. One message per version.
@@ -197,7 +205,7 @@ pub fn update_available(version: &str) {
         s.update_sent = version.to_string();
         let _ = save(&h.path, &s);
     }
-    send_event(h, "update", "", &format!("FoilGateway {version} is available."), now());
+    send_event(h, "update", "", &format!("FoilGateway {version} is available."), now(), None);
 }
 
 fn title(ev: &str) -> &'static str {
@@ -250,15 +258,57 @@ fn group_flush(groups: &mut HashMap<String, Group>, at: i64) -> Vec<Msg> {
     out
 }
 
-fn send_event(h: &Hub, ev: &str, device: &str, text: &str, at: i64) {
+fn send_event(h: &Hub, ev: &str, device: &str, text: &str, at: i64, id: Option<i64>) {
     let targets: Vec<(String, String)> = lock(&h.saved).dests.iter().filter(|d| d.events.iter().any(|e| e == ev)).map(|d| (d.id.clone(), d.name.clone())).collect();
-    for (id, name) in targets {
-        queue(h, &id, &name, ev, device, text, at);
+    for (dest, name) in targets {
+        queue(h, &dest, &name, ev, device, text, at, id);
     }
 }
 
-fn queue(h: &Hub, dest: &str, name: &str, ev: &str, device: &str, text: &str, at: i64) -> u64 {
-    let body = json!({
+/// A same-site path for the webhook: the log line when we have its id,
+/// otherwise the Capture Log filtered to that device and kind.
+fn event_link(ev: &str, device: &str, id: Option<i64>) -> String {
+    if let Some(id) = id.filter(|n| *n > 0) {
+        return format!("/?alert={id}");
+    }
+    if ev == "update" {
+        return "/settings/updates".into();
+    }
+    let kind = match ev {
+        "new_device" => "device",
+        "look" => "look",
+        "blocked" => "block",
+        "audit" => "audit",
+        "settings" | "started" => "setting",
+        _ => "",
+    };
+    let mut q = Vec::new();
+    if !kind.is_empty() {
+        q.push(format!("kind={kind}"));
+    }
+    if !device.is_empty() {
+        q.push(format!("q={}", link_query(device)));
+    }
+    if q.is_empty() {
+        "/log".into()
+    } else {
+        format!("/log?{}", q.join("&"))
+    }
+}
+
+fn link_query(s: &str) -> String {
+    let mut out = String::new();
+    for b in s.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => out.push(b as char),
+            _ => out.push_str(&format!("%{b:02X}")),
+        }
+    }
+    out
+}
+
+fn queue(h: &Hub, dest: &str, name: &str, ev: &str, device: &str, text: &str, at: i64, id: Option<i64>) -> u64 {
+    let mut body = json!({
         "gateway": "FoilGateway Network",
         "version": env!("CARGO_PKG_VERSION"),
         "event": ev,
@@ -266,8 +316,12 @@ fn queue(h: &Hub, dest: &str, name: &str, ev: &str, device: &str, text: &str, at
         "text": text,
         "device": device,
         "at": at,
-    })
-    .to_string();
+        "link": event_link(ev, device, id),
+    });
+    if let Some(id) = id.filter(|n| *n > 0) {
+        body["id"] = json!(id);
+    }
+    let body = body.to_string();
     let seq = {
         let mut s = lock(&h.seq);
         *s += 1;
@@ -635,7 +689,7 @@ pub fn change(b: &Value) -> Result<(Value, String), String> {
         }
         "test" => {
             let name = lock(&h.saved).dests.iter().find(|d| d.id == id).map(|d| d.name.clone()).ok_or("No such destination.")?;
-            queue(h, &id, &name, "test", "", "This is a test message from FoilGateway.", now());
+            queue(h, &id, &name, "test", "", "This is a test message from FoilGateway.", now(), None);
             line = format!("sent a test notification to {name}");
         }
         _ => return Err("Unknown action.".into()),

@@ -85,6 +85,12 @@ th { color: var(--dim); font-weight: var(--fw-bold); font-size: var(--fs-label);
 td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
 td .mute, .mute { color: var(--dim); }
 tr.click { cursor: pointer; } tr.click:hover td { background: #10243a; } tr.sel td { background: #12304d; }
+tr.act td { background: var(--own-bg); padding: 0 12px 14px; border-top: 0; vertical-align: top; }
+.actbox { border: 1px solid #2f7bd6; border-radius: 10px; padding: 12px 14px; background: var(--card-bg); }
+.actbox h4 { margin: 0 0 4px; font-size: var(--fs-label); letter-spacing: var(--ls-label); text-transform: uppercase; color: var(--head); }
+.actbox p { margin: 0 0 10px; color: var(--text-2); }
+.actbox .acts { display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-start; margin: 0; }
+.actbox p.hint { margin: 10px 0 0; color: var(--dim); font-size: var(--fs-small); }
 .empty { color: var(--dim); padding: 8px 0; margin: 0; line-height: 1.5; }
 .pill { display: inline-block; font-size: var(--fs-label); font-weight: var(--fw-bold); letter-spacing: var(--ls-label); padding: 1px 6px; line-height: 14px; border-radius: 4px; text-transform: uppercase; white-space: nowrap; border: 1px solid; }
 .pill.trusted { background: #0f3324; color: var(--ok); border-color: #1e6a47; }
@@ -146,6 +152,8 @@ canvas#map { width: 100%; height: 100%; display: block; }
 .sect h4 { margin: 0 0 6px; font-size: var(--fs-label); letter-spacing: var(--ls-label); text-transform: uppercase; color: var(--text-2); }
 .overlay { position: fixed; inset: 0; z-index: 50; display: grid; place-items: center; background: rgba(3, 8, 14, .7); }
 .overlay[hidden] { display: none; }
+.box.big { width: min(760px, 94vw); max-height: 90vh; overflow-y: auto; }
+.box.big .actbox { margin: 12px 0; }
 .box { width: min(460px, 92vw); border: 1px solid #2a4560; border-radius: 12px; padding: 20px; background: #0f1a2e; box-shadow: 0 18px 50px rgba(0, 0, 0, .55); line-height: 1.5; }
 .box h3 { margin: 0 0 8px; font-size: var(--fs-h3); color: var(--strong); }
 .box .acts { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; }
