@@ -6,6 +6,12 @@
 
   // Small element builder: h("div.card", {onclick}, child, "text", ...)
   function h(tag, attrs, ...kids) {
+    // {perm: "id"} or {perm: "admin"}: left out for users without it.
+    if (attrs && typeof attrs === "object" && !(attrs instanceof Node) && !Array.isArray(attrs) && "perm" in attrs) {
+      if (!can(attrs.perm)) return null;
+      attrs = Object.assign({}, attrs);
+      delete attrs.perm;
+    }
     const [name, ...cls] = tag.split(".");
     const el = document.createElement(name || "div");
     if (cls.length) el.className = cls.join(" ");
@@ -28,6 +34,16 @@
     kids.forEach(add);
     return el;
   }
+
+  // What the signed-in user may do. Filled from every status reply; the
+  // gateway checks each request again, this only hides what would be refused.
+  let ME = { admin: false, perms: [] };
+  function can(p) {
+    if (Array.isArray(p)) return p.every(can);
+    return ME.admin || (p !== "admin" && ME.perms.includes(p));
+  }
+  // Settings for admins; status only for everyone else.
+  async function settingsOrStatus() { return ME.admin ? api("/api/settings") : { status: await api("/api/status") }; }
 
   // Handlers go through el._on so a redraw can hand an element that stays
   // on the page the new closures (see morph).
@@ -603,31 +619,60 @@
     ports: [["/ports", "Global"], ["/ports/devices", "Per Device"]],
     // One entry per topic; a later topic (or a panel such as Certificates
     // under Network & access) is one line here plus its panels in settings().
-    settings: [["/settings", "Network & Access"], ["/settings/certs", "Certificates"], ["/settings/general", "Time and Location"], ["/settings/log", "Capture Log"], ["/settings/account", "Account"], ["/settings/view", "View"], ["/settings/setup", "Setup"], ["/settings/updates", "Updates"], ["/settings/help", "Help"], ["/settings/about", "About"]],
+    settings: [["/settings", "Network & Access"], ["/settings/certs", "Certificates"], ["/settings/general", "Time and Location"], ["/settings/log", "Capture Log"], ["/settings/users", "Users"], ["/settings/notify", "Notifications"], ["/settings/view", "View"], ["/settings/setup", "Setup"], ["/settings/updates", "Updates"], ["/settings/help", "Help"], ["/settings/about", "About"]],
   };
   const PATH = location.pathname.replace(/\/+$/, "") || "/";
   const icon = (k) => { const s = document.createElementNS("http://www.w3.org/2000/svg", "svg"); s.setAttribute("viewBox", "0 0 24 24"); s.setAttribute("class", "ico"); s.innerHTML = '<path d="' + ICONS[k] + '" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/>'; return s; };
-  let side = null, mainEl = null;
-  function shell(title) {
+  // Which permission opens each page and sub-page. Admins see all.
+  const PAGE_PERM = { dashboard: "status", devices: "devices", firewall: "firewall_view", ports: "firewall_view", log: "log" };
+  const SUB_PERM = {
+    "/devices/troubleshoot": "alerts", "/firewall/audit": "alerts",
+    "/settings": "speed_view", "/settings/updates": "updates_view", "/settings/help": "any", "/settings/about": "any",
+    "/firewall/coach": "admin",
+  };
+  const subOk = (u) => ME.admin || (SUB_PERM[u] ? SUB_PERM[u] === "any" || can(SUB_PERM[u]) : !u.startsWith("/settings"));
+  const pageOk = (k) => ME.admin || (k === "settings" ? SUBS.settings.some(([u]) => subOk(u)) : can(PAGE_PERM[k]));
+  // The first page a user can open: the main pages in menu order, then
+  // the settings pages (Speed Test, Updates, Help) in their menu order.
+  const firstPage = () => {
+    const main = [["dashboard", "/"], ["devices", "/devices"], ["firewall", "/firewall"], ["ports", "/ports"], ["log", "/log"]].find(([k]) => pageOk(k));
+    return main ? main[1] : (SUBS.settings.find(([u]) => subOk(u)) || ["/settings/help"])[0];
+  };
+  // The API Reference opens from Users and lights Users in the menu.
+  const navPath = PATH === "/settings/api" ? "/settings/users" : PATH === "/settings/account" ? "/settings/users" : PATH;
+  function sideNav() {
     const nav = [["dashboard", "/", "Dashboard"], ["devices", "/devices", "Devices"], ["firewall", "/firewall", "Firewall"], ["ports", "/ports", "Ports"], ["log", "/log", "Capture Log"], ["settings", "/settings", "Settings"]];
-    side = h("aside" + (SUBS[PAGE] ? ".subs" : ""),
+    const first = (k, href) => k === "settings" && !ME.admin ? ((SUBS.settings.find(([u]) => subOk(u)) || [href])[0]) : href;
+    return h("aside" + (SUBS[PAGE] ? ".subs" : ""),
       h("div.brand", h("img", { src: "/s/icon.svg", alt: "" }), h("div", h("b", "FoilGateway"), h("small", "Network edition"))),
-      nav.map(([k, href, label]) => [h("a.nav" + (k === PAGE ? ".on" : ""), { href, id: "nav-" + k }, icon(k), label),
-        k === PAGE && SUBS[k] ? h("div.subnav", SUBS[k].map(([u, t]) => h("a" + (u === PATH ? ".on" : ""), { href: u }, t))) : null]),
+      nav.filter(([k]) => pageOk(k)).map(([k, href, label]) => [h("a.nav" + (k === PAGE ? ".on" : ""), { href: first(k, href), id: "nav-" + k }, icon(k), label),
+        k === PAGE && SUBS[k] ? h("div.subnav", SUBS[k].filter(([u]) => subOk(u)).map(([u, t]) => h("a" + (u === navPath ? ".on" : ""), { href: u }, !ME.admin && u === "/settings" ? "Speed Test" : t))) : null]),
       h("div.status", { id: "sysbox" }),
       h("div.ver", h("span", { id: "ver" })));
+  }
+  let side = null, mainEl = null;
+  function shell(title) {
+    side = sideNav();
     mainEl = h("main");
     $("#app").replaceChildren(h("div.shell", side, mainEl));
     document.title = title + " - FoilGateway";
   }
   function statusBox(st) {
+    if (st && typeof st.admin === "boolean") {
+      const was = JSON.stringify(ME);
+      ME = { admin: st.admin, perms: st.perms || [] };
+      // Permissions changed while the page was open: draw the menu again.
+      if (was !== JSON.stringify(ME) && side) { const s2 = sideNav(); side.replaceWith(s2); side = s2; }
+    }
     applyTimePrefs(st);
     window.__fgWhiteExpiry = !!(st && st.white_expiry);
     OFFSET = st.offset || 0;
     $("#ver").textContent = "Version " + st.version;
     const nd = $("#nav-devices");
-    nd.querySelector(".count")?.remove();
-    if (st.new_devices) nd.append(h("span.count", String(st.new_devices)));
+    if (nd) {
+      nd.querySelector(".count")?.remove();
+      if (st.new_devices) nd.append(h("span.count", String(st.new_devices)));
+    }
     const lk = (p, name) => p ? h("span." + (p.link ? "ok" : "bad"), name + " " + p.name + (p.link ? " link" : " no cable")) : h("span.bad", name + " " + "missing");
     $("#sysbox").replaceChildren(
       h("h2", "System status"),
@@ -638,7 +683,7 @@
       h("div.why", dualUp(st) + (st.temp != null ? " · " + st.temp.toFixed(0) + "°C" : "")));
   }
   function header(title, st, tools) {
-    return h("div.head", h("h1", title), h("span.when", (st.host || "") + " · " + when(st.now)), h("span.offline", { id: "offline", hidden: true }, "Can't reach the gateway"),
+    return h("div.head", h("h1", title), h("span.when", when(st.now)), h("span.offline", { id: "offline", hidden: true }, "Can't reach the gateway"),
       h("div.tools", tools), h("div.who", h("span", { title: "Signed in" }, st.user || ""), h("button.quiet", { id: "signout", onclick: async () => { await api("/api/logout", {}); location.href = "/login"; } }, "Sign out")));
   }
   // Shown on every page while anything is in audit, so nobody forgets
@@ -649,27 +694,27 @@
     if (st.mode !== "audit" && !devs.length) return null;
     const what = st.mode === "audit" ? "Audit is on for the whole network. Nothing is blocked; what would be is written down."
       : "Audit is on for " + (devs.length === 1 ? devs[0].label + " " + untilText(devs[0].until) : devs.length + " devices") + ". What would be blocked for " + (devs.length === 1 ? "it" : "them") + " is written down and let through.";
-    return h("p.notice.audit", what, " ", h("a", { href: "/firewall/audit" }, "See what would be blocked"),
-      st.mode === "audit" ? [" · ", h("a", { href: "/firewall#mode" }, "Change protection mode")] : null);
+    return h("p.notice.audit", what, " ", can(["alerts", "firewall_view"]) ? h("a", { href: "/firewall/audit" }, "See what would be blocked") : null,
+      st.mode === "audit" && can("admin") ? [" · ", h("a", { href: "/firewall#mode" }, "Change protection mode")] : null);
   }
   // Shown on every page while a newer release is known. Opens Updates; never installs.
   function updateNote(st) {
     if (!st || !st.update_available || PATH === "/settings/updates") return null;
     return h("p.notice", { id: "update-notice" }, h("b", "FoilGateway " + st.update_available + " is available. "),
-      h("a", { href: "/settings/updates" }, "Open Updates"));
+      h("a", { perm: "updates_view", href: "/settings/updates" }, "Open Updates"));
   }
   function pendingNote(st) {
     const a = [auditNote(st), updateNote(st)];
     if (!st.pending) return a;
     return [...a, h("p.notice", "A change is waiting to be kept (" + st.pending.what + "). It goes back in " + st.pending.left + " s unless this browser confirms it.", " ",
-      h("button.small", { onclick: async () => { await api("/api/confirm", {}); refresh(); } }, "Keep it"))];
+      h("button.small", { perm: "admin", onclick: async () => { await api("/api/confirm", {}); refresh(); } }, "Keep it"))];
   }
   function pathNote(st) {
     return st.in_path ? null : h("p.notice", h("b", "Not in the traffic path yet. "), st.path_note.replace(/^Not in the traffic path yet: /, "").replace(/^./, (c) => c.toUpperCase()));
   }
   // Persistent until LAN-only or Keep Both (Normal default is LAN-only).
   function adminNudge(st) {
-    if (!st || !st.admin_nudge) return null;
+    if (!st || !st.admin_nudge || !can("admin")) return null;
     return h("p.notice", { "data-k": "admin-nudge" },
       h("b", "Settings still open from the router side. "),
       "Strangers on the internet side could open FoilGateway pages. Switch to Local Network Only, or keep both if you still need outside access.",
@@ -785,7 +830,7 @@
     return h("div", h("b.bad", "The location download failed."), h("div", g.error), h("div.mute", next));
   }
   function geoRetry() {
-    return h("button", { onclick: () => change("/api/settings", { action: "geo", on: true }) }, "Try now");
+    return h("button", { perm: "admin", onclick: () => change("/api/settings", { action: "geo", on: true }) }, "Try now");
   }
   function geoCard(g, conns, home) {
     if (!g.on || !g.loaded) {
@@ -937,6 +982,23 @@
   }
   const ALERT = { device: "new device", port: "new port", block: "suspicious" };
   const alertKey = (a) => [alertKind(a), a.device || "", a.text].join(" ");
+  // Where an alert link goes, if this user may open that page.
+  const linkOk = (href) => {
+    const path = (href || "").split(/[?#]/)[0];
+    const page = path === "/" ? "dashboard" : path.split("/")[1];
+    return pageOk(page) && (!SUB_PERM[path] || subOk(path));
+  };
+  // Clear marks alerts handled: they leave the dashboard and stay in the
+  // Capture Log marked handled.
+  async function clearAlerts(ids) {
+    await change("/api/alerts/clear", { ids });
+  }
+  function clearAllAsk(list) {
+    const go = h("button", { onclick: async () => { hideBox(); await clearAlerts(list.map((a) => a.id)); } }, "Clear");
+    showBox(h("h3", "Clear " + list.length + (list.length === 1 ? " Alert?" : " Alerts?")),
+      h("p", (list.length === 1 ? "It leaves" : "They leave") + " the dashboard. The Capture Log still has every line, marked handled."),
+      h("div.acts", h("button.quiet", { onclick: hideBox }, "Cancel"), go));
+  }
   function alertRows(list) {
     if (!list.length) return h("p.empty.padded", "All good, nothing to do.");
     return list.map((a) => {
@@ -947,11 +1009,15 @@
       if (k === "device") action = h("span.go", "Don’t know it? Block All");
       else if (k === "port") action = h("span.go", "Review on Ports");
       else if ((a.link || "").startsWith("/devices/troubleshoot")) action = h("span.go", "Open the Troubleshooter");
-      return h("a.alert", { "data-key": a._key || alertKey(a), href: a.link || "/log?kind=alert" },
+      const href = a.link || "/log?kind=alert";
+      const open = linkOk(href);
+      const line = h(open ? "a.alert" : "div.alert", open ? { href } : null,
         h("span.sev." + (k === "block" ? "bad" : "warn"), ALERT[k]),
         (who ? who + ": " : "") + a.text + tip + " ",
-        action, " ",
+        open ? action : null, " ",
         h("span.t", when(a.last)), a.count > 1 ? h("span.count", { style: "margin-left:6px" }, "×" + a.count) : null);
+      return h("div.alert-row", { "data-key": a._key || alertKey(a) }, line,
+        h("button.small.quiet", { perm: "handle_alerts", onclick: () => clearAlerts([a.id]) }, "Clear"));
     });
   }
   function dashboard() {
@@ -1000,7 +1066,8 @@
         })(),
         h("div.body.dash",
           h("div.col",
-            grow(panel("Alerts", h("span.mute", alerts.length + " shown"),
+            grow(panel("Alerts", [h("span.mute", alerts.length + " shown"),
+              alerts.length ? h("button.small.quiet.push", { perm: "handle_alerts", onclick: () => clearAllAsk(alerts) }, "Clear All Shown") : null],
               h("div.tools-row", searchBox("alert-q", aq, (v) => { aq = v; refresh(); }, "Search alerts"), chip("", "All"), chip("device", "New devices"), chip("port", "New ports"), chip("block", "Suspicious")),
               scroller("alerts", null, alertRows(alerts)))),
             grow(panel("Connections", h("span.mute", d.conns.length + " open"), scroller("conns", null, table(["Device", "Remote", "Proto", "Country", "Bytes#"], connRows(stable("conns", "", d.conns, connKey, true)), "No connections tracked right now."))))),
@@ -1017,22 +1084,28 @@
   // Websites and addresses for one device, in one list: each line is
   // either always allowed or always blocked.
   function siteRules(v, set, bare) {
-    let how = "deny";
+    // Blocking needs the Block list permission, allowing the Allow list one.
+    const LIST_PERM = { deny: "block_list", allow: "allow_list" };
+    const hows = [["deny", "Block it"], ["allow", "Allow it"]].filter(([k]) => can(LIST_PERM[k]));
+    let how = hows.length ? hows[0][0] : "deny";
     const input = h("input", { id: "site-add", placeholder: "example.com or 1.2.3.4", style: "flex:1 1 200px;min-width:0" });
-    const seg = h("div.seg", { "data-ref": "" }, [["deny", "Block it"], ["allow", "Allow it"]].map(([k, t]) => h("button" + (k === how ? ".on" : ""), { type: "button", "data-how": k, onclick: (e) => { how = k; seg.querySelectorAll("button").forEach((b) => b.classList.toggle("on", b === e.currentTarget)); } }, t)));
+    const seg = h("div.seg", { "data-ref": "" }, hows.map(([k, t]) => h("button" + (k === how ? ".on" : ""), { type: "button", "data-how": k, onclick: (e) => { how = k; seg.querySelectorAll("button").forEach((b) => b.classList.toggle("on", b === e.currentTarget)); } }, t)));
     const add = () => {
       const items = input.value.split(/[\s,]+/).filter(Boolean);
       if (!items.length) return;
       const other = how === "deny" ? "allow" : "deny";
-      set({ [how]: v[how].concat(items.filter((x) => !v[how].includes(x))), [other]: v[other].filter((x) => !items.includes(x)) });
+      const body = { [how]: v[how].concat(items.filter((x) => !v[how].includes(x))) };
+      // Only touch the other list when an item moves out of it.
+      if (v[other].some((x) => items.includes(x))) body[other] = v[other].filter((x) => !items.includes(x));
+      set(body);
     };
     input.addEventListener("keydown", (e) => { if (e.key === "Enter") add(); });
     const rows = v.deny.map((e) => ["deny", e]).concat(v.allow.map((e) => ["allow", e])).sort((x, y) => x[1].localeCompare(y[1]));
     const body = [
       h("p.hint", "Pick a website or address this device should always be stopped from, or always let through. Blocking is the usual choice. An allowed one gets through even when the device is set to Block All."),
-      h("div.row", { style: "margin-top:6px" }, seg, input, h("button", { onclick: add }, "Add")),
+      hows.length ? h("div.row", { style: "margin-top:6px" }, seg, input, h("button", { onclick: add }, "Add")) : null,
       rows.length ? h("ul.entries.rules-list", rows.map(([k, e]) => h("li", h("span", e), h("span.pill.tag." + (k === "allow" ? "trusted" : "block"), k === "allow" ? "Always Allowed" : "Always Blocked"),
-        h("button.small.quiet", { onclick: () => set({ [k]: v[k].filter((x) => x !== e) }) }, "Remove")))) : h("p.empty.padded", "Nothing set. This device follows its Policy and the firewall lists."),
+        h("button.small.quiet", { perm: LIST_PERM[k], onclick: () => set({ [k]: v[k].filter((x) => x !== e) }) }, "Remove")))) : h("p.empty.padded", "Nothing set. This device follows its Policy and the firewall lists."),
     ];
     if (bare) return h("div.fold-body", body);
     return h("div.sect", h("h4", "Websites And Addresses"), body);
@@ -1054,19 +1127,19 @@
       h("div.culprit-line",
         h("span", ...whoBits),
         canAllow
-          ? h("button.small", { onclick: goAllow }, "Allow This")
+          ? h("button.small", { perm: allowPerm(culprit.reason), onclick: goAllow }, "Allow This")
           : (culprit.reason === "mode" || culprit.reason === "lanonly"
-            ? h("a.btn.small.quiet", { href: "/firewall" }, "Open Firewall")
+            ? h("a.btn.small.quiet", { perm: "firewall_view", href: "/firewall" }, "Open Firewall")
             : null)),
-      canAllow ? h("p.hint", { style: "margin:6px 0 0" }, "If that broke something, allow it here. It stays allowed for this device.") : null);
+      canAllow && can("allow_list") ? h("p.hint", { style: "margin:6px 0 0" }, "If that broke something, allow it here. It stays allowed for this device.") : null);
   }
   function auditSect(v, culprit) {
     const go = (m) => change("/api/audit", { mac: v.mac, minutes: m });
     return h("div.sect", h("h4", "Audit"),
       v.auditing ? h("p", h("span.warn", "On " + untilText(v.audit_until) + ". "), "Blocks for this device are written down and let through. Safety rules and the whole-network mode still apply.") : h("p.hint", "Lets everything this device does through for a while and writes down what would have been blocked, so you can allow what it needs."),
       culpritStrip(v.mac, culprit),
-      h("div.row.same", v.auditing ? h("button", { onclick: () => go(0) }, "Turn Audit Off") : AUDIT_FOR.map(([m, t]) => h("button.quiet", { onclick: () => go(m) }, t)),
-        PATH === "/devices/troubleshoot" ? null : h("a.btn.quiet", { href: "/devices/troubleshoot?mac=" + encodeURIComponent(v.mac) }, "What's Blocked for It")));
+      h("div.row.same", v.auditing ? h("button", { perm: "admin", onclick: () => go(0) }, "Turn Audit Off") : AUDIT_FOR.map(([m, t]) => h("button.quiet", { perm: "admin", onclick: () => go(m) }, t)),
+        PATH === "/devices/troubleshoot" ? null : h("a.btn.quiet", { perm: "alerts", href: "/devices/troubleshoot?mac=" + encodeURIComponent(v.mac) }, "What's Blocked for It")));
   }
   function profileSect(v, list) {
     if (!list || !list.length) return null;
@@ -1078,7 +1151,7 @@
         p.note ? h("div.mute", p.note) : null,
         p.risky.length ? h("div.warn", "Opening " + p.risky.join(", ") + " has a risk; see the Ports page.") : null,
         h("div.mute", "From ", h("a", { href: p.source, target: "_blank", rel: "noopener" }, "the maker's own list"), "."),
-        p.applied ? null : h("div.row", { style: "margin-top:6px" }, h("button.small", { onclick: () => change("/api/profile", { mac: v.mac, id: p.id }) }, "Allow what it needs")))));
+        p.applied ? null : h("div.row", { style: "margin-top:6px" }, h("button.small", { perm: "admin", onclick: () => change("/api/profile", { mac: v.mac, id: p.id }) }, "Allow what it needs")))));
   }
   function connSect(det, v, set) {
     if (!connPick.remote || location.hash.slice(1) !== v.mac) return null;
@@ -1087,14 +1160,15 @@
     return h("div.sect.picked", h("h4", "Connection to " + r),
       live ? h("p", (live.dir === "out" ? "Going out to " : "Coming in from ") + r + " on " + live.proto + (live.port ? " " + live.port : "") + (live.place ? ", " + live.place.country : "") + ". " + bytes(live.bytes) + " so far.")
         : h("p.notice", "That connection has ended. You can still block the address."),
-      h("div.row.same", h("button", { onclick: () => set({ deny: v.deny.concat(v.deny.includes(r) ? [] : [r]), allow: v.allow.filter((x) => x !== r) }) }, "Block this address for this device"),
-        h("button.quiet", { onclick: () => change("/api/list", { list: "black", add: r }) }, "Black list it")));
+      h("div.row.same", h("button", { perm: ["block_list", "allow_list"], onclick: () => set({ deny: v.deny.concat(v.deny.includes(r) ? [] : [r]), allow: v.allow.filter((x) => x !== r) }) }, "Block this address for this device"),
+        h("button.quiet", { perm: "block_list", onclick: () => change("/api/list", { list: "black", add: r }) }, "Black list it")));
   }
   function deviceDetail(det) {
     const v = det.device;
     const set = (b) => change("/api/device", Object.assign({ mac: v.mac }, b));
-    const name = h("input", { value: v.name, placeholder: v.hostname || v.vendor || v.mac, style: "min-width:0;flex:1 1 180px" });
-    const seg = h("div.seg", { "data-ref": "" }, ["trusted", "normal", "lan_only", "block"].map((p) => h("button" + (v.policy === p ? ".on." + p : ""), { onclick: () => policyAsk(v.mac, v.label, p, set) }, POLICY[p])));
+    const canAct = can("device_actions");
+    const name = h("input", { disabled: !canAct, value: v.name, placeholder: v.hostname || v.vendor || v.mac, style: "min-width:0;flex:1 1 180px" });
+    const seg = h("div.seg", { "data-ref": "" }, ["trusted", "normal", "lan_only", "block"].map((p) => h("button" + (v.policy === p ? ".on." + p : ""), { disabled: !canAct, onclick: () => policyAsk(v.mac, v.label, p, set) }, POLICY[p])));
     const nConn = (det.conns || []).length;
     const nBlock = (det.blocked || []).length;
     const nRules = (v.deny || []).length + (v.allow || []).length;
@@ -1106,26 +1180,26 @@
         h("div", v.sub || v.mac),
         h("div", (v.online ? "Online" : "Offline") + " · Last Seen " + when(v.last_seen)),
         h("div.mute", "Up ", h("span.out", rate(v.up_rate)), " · Down ", h("span.in", rate(v.down_rate)), " · Total " + bytes(v.up) + " up, " + bytes(v.down) + " down")),
-      v.new ? h("p.notice", "New on the network. It got the default for new devices. Pick a Policy or mark it looked at. ", h("button.small", { onclick: () => set({ seen: true }) }, "Looks Fine")) : null,
-      h("div.sect", h("h4", "Name"), h("div.row", name, h("button", { onclick: () => set({ name: name.value }) }, "Save Name"))),
+      v.new ? h("p.notice", "New on the network. It got the default for new devices. Pick a Policy or mark it looked at. ", h("button.small", { perm: "device_actions", onclick: () => set({ seen: true }) }, "Looks Fine")) : null,
+      h("div.sect", h("h4", "Name"), h("div.row", name, h("button", { perm: "device_actions", onclick: () => set({ name: name.value }) }, "Save Name"))),
       h("div.sect", h("h4", "Policy"), seg, h("p.hint", "Trusted skips Black list, threat lists, and countries. Local Network Only and Block All stop this device except its own Allow list. Confirm before a Policy applies.")),
       h("div.sect", h("h4", "Telemetry"),
-        h("label.check", h("input", { type: "checkbox", checked: v.telemetry, onchange: (e) => set({ telemetry: e.target.checked }) }), "Block Telemetry For This Device"),
+        h("label.check", h("input", { type: "checkbox", disabled: !canAct, checked: v.telemetry, onchange: (e) => set({ telemetry: e.target.checked }) }), "Block Telemetry For This Device"),
         h("p.hint", "Stops usage and tracking phone-home. The device usually keeps working.")),
       auditSect(v, det.culprit),
       connSect(det, v, set),
       profileSect(v, det.profiles),
-      h("div.sect", h("h4", "Ports"), h("a", { href: "/ports/devices?q=" + encodeURIComponent(v.mac) }, "Port Settings For This Device")),
+      can("firewall_view") ? h("div.sect", h("h4", "Ports"), h("a", { href: "/ports/devices?q=" + encodeURIComponent(v.mac) }, "Port Settings For This Device")) : null,
       foldEl("dev:" + v.mac + ":sites", "Websites And Addresses" + (nRules ? " (" + nRules + ")" : ""), siteRules(v, set, true)),
       foldEl("dev:" + v.mac + ":conns", "Connections Now" + (nConn ? " (" + nConn + ")" : ""),
         nConn ? table(["Device", "Remote", "Proto", "Country", "Bytes#"], connRows(det.conns, (c) => connPick.remote && ((connPick.key && c.key === connPick.key) || c.remote === connPick.remote)), "") : h("p.empty.padded", "None right now.")),
       foldEl("dev:" + v.mac + ":blocked", "Blocked Today" + (nBlock ? " (" + nBlock + ")" : ""),
         nBlock ? h("table", h("tbody", blockedRows(det.blocked))) : h("p.empty.padded", "Nothing blocked for this device today.")),
       foldEl("dev:" + v.mac + ":more", "More", [
-        h("p.hint", "Forget removes its name and settings. Block All cuts it off until you change the Policy."),
+        h("p.hint", can("admin") ? "Forget removes its name and settings. Block All cuts it off until you change the Policy." : canAct ? "Block All cuts it off until you change the Policy." : "This user can view this device but not change it."),
         h("div.row",
-          h("button.danger", { onclick: () => policyAsk(v.mac, v.label, "block", set) }, "Block All"),
-          h("button.danger", { onclick: () => { if (confirm("Forget " + v.label + "? It shows up as new next time and loses its settings.")) set({ forget: true }).then(() => { selected = ""; }); } }, "Forget This Device"))], "more"));
+          h("button.danger", { perm: "device_actions", onclick: () => policyAsk(v.mac, v.label, "block", set) }, "Block All"),
+          h("button.danger", { perm: "admin", onclick: () => { if (confirm("Forget " + v.label + "? It shows up as new next time and loses its settings.")) set({ forget: true }).then(() => { selected = ""; }); } }, "Forget This Device"))], "more"));
   }
 
   function devices() {
@@ -1166,9 +1240,11 @@
   // ---------- Troubleshooter ----------
   // Everything blocked for one device in the last hour, by reason, with a
   // way to allow each one.
+  // Allowing a device deny-list entry takes it off a block list, so it needs both.
+  const allowPerm = (reason) => (reason === "devdeny" ? ["allow_list", "block_list"] : "allow_list");
   const allowPayload = (mac, e, reason, permanent) => ({ mac, reason, remote: e.remote, proto: e.proto, port: e.port, dir: e.dir, permanent: !!permanent });
   const allowBtn = (mac, e, reason, label, permanent) => e.action && e.action.allow
-    ? h("button.small", { onclick: () => change("/api/allow", allowPayload(mac, e, reason, permanent !== false && (permanent || label === "Allow · Permanent" || !(window.__fgWhiteExpiry)))) }, label || e.action.allow)
+    ? h("button.small", { perm: allowPerm(reason), onclick: () => change("/api/allow", allowPayload(mac, e, reason, permanent !== false && (permanent || label === "Allow · Permanent" || !(window.__fgWhiteExpiry)))) }, label || e.action.allow)
     : e.action && e.action.href ? h("a", { href: e.action.href, title: e.action.why }, "Change it here") : h("span.mute", (e.action && e.action.why) || "");
   // When whitelist expiry is on: primary = 30 days, secondary = Permanent.
   const allowBtns = (mac, e, reason, label) => {
@@ -1177,8 +1253,8 @@
       if (!(ee.action && ee.action.allow)) return one(ee);
       if (window.__fgWhiteExpiry && !label) {
         return h("div.row.same",
-          h("button.small", { onclick: () => change("/api/allow", allowPayload(mac, ee, reason, false)) }, "Allow · 30 Days"),
-          h("button.small.quiet", { onclick: () => change("/api/allow", allowPayload(mac, ee, reason, true)) }, "Allow · Permanent"));
+          h("button.small", { perm: allowPerm(reason), onclick: () => change("/api/allow", allowPayload(mac, ee, reason, false)) }, "Allow · 30 Days"),
+          h("button.small.quiet", { perm: allowPerm(reason), onclick: () => change("/api/allow", allowPayload(mac, ee, reason, true)) }, "Allow · Permanent"));
       }
       return one(ee, label || (window.__fgWhiteExpiry ? "Allow · Permanent" : ee.action.allow), true);
     };
@@ -1222,7 +1298,7 @@
         mac ? null : h("p.hint", "Pick the device that isn’t working. Lines separate stopped attempts from attempts let through by Audit. Allow the one that matches what broke."),
         h("div.body.one", grow(panel(title, h("span.mute", mac ? (label || mac) : "last hour"),
           focusBanner,
-          h("div.tools-row", pick, outcomePick, v ? h("a.btn.quiet", { href: "/devices#" + v.mac }, "Device Settings") : null),
+          h("div.tools-row", pick, outcomePick, v ? h("a.btn.quiet", { perm: "devices", href: "/devices#" + v.mac }, "Device Settings") : null),
           d.alerts.length ? h("p.notice", d.alerts[0].text, " The lines below show what, and how to allow it if it should work.") : null,
           culpritStrip(mac, d.culprit, { focus: true }),
           v ? auditSect(v, null) : null,
@@ -1250,7 +1326,7 @@
       culprits.length ? h("div", culprits.map((x) => culpritStrip(x.mac, x.culprit, { who: x.label }))) : null,
       scroller("aud", null, table(["Device", "What", "Last", "Times#", ""], rows.map((r) => h("tr", { "data-key": r.key },
         h("td", r.device, h("div.mute", r.why.replace(/^./, (c) => c.toUpperCase()))), h("td", blockWhat(r, true)), h("td.when", when(r.last)), h("td.num", String(r.count)),
-        h("td.act", h("div.row.same", allowBtns(r.mac, r, r.reason, "Allow · Permanent"), h("button.small.quiet", { onclick: () => keep(r) }, "Keep blocking"))))),
+        h("td.act", h("div.row.same", allowBtns(r.mac, r, r.reason, "Allow · Permanent"), h("button.small.quiet", { perm: "handle_alerts", onclick: () => keep(r) }, "Keep blocking"))))),
       "Nothing so far. Lines show up here while audit is on.")),
       shownOf(rows.length, d.total, "lines")));
   }
@@ -1364,23 +1440,24 @@
       }
       const d = await api(view === "audit" ? "/api/audit" : "/api/firewall" + (view === "rules" ? "?rules=1" : ""));
       statusBox(d.status);
-      const modeRow = (m, title, text) => h("div.qs", h("div", d.mode === m ? h("button.isOn", { disabled: true, "aria-pressed": "true" }, "On") : h("button.quiet", { onclick: () => modeAsk(m, d.status && d.status.rollback_secs) }, "Turn On")), h("div", h("b", title), h("p", text)));
-      const toggle = (key, val, title, text) => h("div.qs", h("div", h("button" + (val ? ".danger" : ""), { onclick: () => change("/api/firewall", { [key]: !val }) }, val ? "Turn Off" : "Turn On")), h("div", h("b", title, " ", val ? h("span.ok", "On") : h("span.mute", "Off")), h("p", text)));
+      const modeRow = (m, title, text) => h("div.qs", h("div", d.mode === m ? h("button.isOn", { disabled: true, "aria-pressed": "true" }, "On") : h("button.quiet", { perm: "admin", onclick: () => modeAsk(m, d.status && d.status.rollback_secs) }, "Turn On")), h("div", h("b", title), h("p", text)));
+      const toggle = (key, val, title, text) => h("div.qs", h("div", h("button" + (val ? ".danger" : ""), { perm: "admin", onclick: () => change("/api/firewall", { [key]: !val }) }, val ? "Turn Off" : "Turn On")), h("div", h("b", title, " ", val ? h("span.ok", "On") : h("span.mute", "Off")), h("p", text)));
       const listPanel = (which, title, text, entries) => {
-        const input = h("textarea", { placeholder: "One per line: example.com, https://site.org/page, 1.2.3.4, 10.0.0.0/8" });
-        return grow(panel(title, h("span.mute", entries.length + " entries"), h("p.hint", text), input, h("div.row", { style: "margin:6px 0" }, h("button", { onclick: () => input.value.trim() && change("/api/list", { list: which, add: input.value }) }, "Add")),
-          scroller("list-" + which, null, entries.length ? h("ul.entries", entries.map((e) => h("li", h("span", e.entry), e.site ? h("span.mute", { style: "flex:none" }, e.addresses + " address" + (e.addresses === 1 ? "" : "es") + " seen") : null, h("button.small.quiet", { onclick: () => change("/api/list", { list: which, remove: e.entry }) }, "Remove")))) : h("p.empty", "Empty."))));
+        const lp = which === "white" ? "allow_list" : "block_list";
+        const input = can(lp) ? h("textarea", { placeholder: "One per line: example.com, https://site.org/page, 1.2.3.4, 10.0.0.0/8" }) : null;
+        return grow(panel(title, h("span.mute", entries.length + " entries"), h("p.hint", text), input, input ? h("div.row", { style: "margin:6px 0" }, h("button", { onclick: () => input.value.trim() && change("/api/list", { list: which, add: input.value }) }, "Add")) : null,
+          scroller("list-" + which, null, entries.length ? h("ul.entries", entries.map((e) => h("li", h("span", e.entry), e.site ? h("span.mute", { style: "flex:none" }, e.addresses + " address" + (e.addresses === 1 ? "" : "es") + " seen") : null, h("button.small.quiet", { perm: lp, onclick: () => change("/api/list", { list: which, remove: e.entry }) }, "Remove")))) : h("p.empty", "Empty."))));
       };
       const presetCards = () => h("div.preset-grid", (d.presets || []).map((p) => h("div.preset-card" + (p.current ? ".on" : ""),
         h("div.row.same", h("b", p.label), p.current ? h("span.pill.ok", "Current") : null),
         h("p", p.one_line),
-        p.current ? h("button.isOn", { disabled: true }, "Applied") : h("button", { onclick: () => presetAsk(p, d.status && d.status.rollback_secs) }, "Review And Apply"))));
+        p.current ? h("button.isOn", { disabled: true }, "Applied") : h("button", { perm: "admin", onclick: () => presetAsk(p, d.status && d.status.rollback_secs) }, "Review And Apply"))));
       let body;
       const onOff = (on) => on ? h("span.ok", "On") : h("span.mute", "Off");
       const statusRow = (label, val) => h("div.stat-row", h("span", label), h("span", val));
       const modeName = { audit: "Audit", normal: "Normal", lan_only: "Local Network Only", block_all: "Block Everything" };
       if (view === "audit") {
-        const leave = d.mode === "audit" ? h("button", { onclick: () => previewAsk("Leave Audit · Apply Normal?", { leave_audit: true }, { lead: "Applies the Normal protection level. You can fine-tune afterward." }) }, "Leave Audit · Apply Normal") : null;
+        const leave = d.mode === "audit" ? h("button", { perm: "admin", onclick: () => previewAsk("Leave Audit · Apply Normal?", { leave_audit: true }, { lead: "Applies the Normal protection level. You can fine-tune afterward." }) }, "Leave Audit · Apply Normal") : null;
         body = h("div.body.two",
           h("div.col", { "data-k": "fw-audit" }, auditList(d)),
           h("div.col", { "data-k": "fw-audit-side" },
@@ -1394,12 +1471,12 @@
             panel("Protection Levels", h("span.pill", d.preset_chip || "Custom"),
               h("p.hint", "Normal and FortNox are the named starting points. Custom means you changed something afterward. Leave Audit lands on Normal."),
               presetCards())),
-          h("div.col", { "data-k": "fw-presets-side" },
+          can("admin") ? h("div.col", { "data-k": "fw-presets-side" },
             panel("Apply A Level", null,
               h("p.hint", "Review And Apply lists every setting that will change. Nothing applies until you press OK. You can fine-tune any toggle afterward."),
               h("div.stack",
                 h("button.quiet", { onclick: () => previewAsk("Reset To Normal?", { preset: "normal" }, { lead: "Applies the Normal protection level. You can fine-tune afterward." }) }, "Reset To Normal"),
-                h("a.btn", { href: "/firewall/coach" }, "Best Practices")))));
+                h("a.btn", { href: "/firewall/coach" }, "Best Practices")))) : null);
       } else if (view === "mode") {
         body = h("div.body.two",
           h("div.col", { "data-k": "fw-mode" },
@@ -1428,7 +1505,7 @@
               toggle("sticky_identity", d.sticky_identity, "Stronger Device Identity", "Remembers hostname and DHCP fingerprint hints when a phone rotates its private MAC. Default Off."),
               toggle("deep_detect", d.deep_detect, "Deeper Detection", "Checks unhandled forwarded TCP traffic for port sweeps and repeated connection failures. No alerts for blocked or already handled traffic. Default Off."),
               d.deep_detect ? h("p.hint", "Observation: " + ((d.detection || {}).state || "unavailable") + (((d.detection || {}).detail) ? ". " + d.detection.detail : "")) : null,
-              h("div.qs", h("div.stack", { id: "newdev" }, ["normal", "lan_only"].map((p) => d.new_devices === p ? h("button.isOn", { disabled: true, "aria-pressed": "true" }, POLICY[p]) : h("button.quiet", { onclick: () => change("/api/firewall", { new_devices: p }) }, POLICY[p]))), h("div", h("b", "New Devices"), h("p", "What a device gets the first time it shows up. It's flagged as new either way."))))),
+              h("div.qs", h("div.stack", { id: "newdev" }, ["normal", "lan_only"].map((p) => d.new_devices === p ? h("button.isOn", { disabled: true, "aria-pressed": "true" }, POLICY[p]) : h("button.quiet", { disabled: !can("admin"), onclick: () => change("/api/firewall", { new_devices: p }) }, POLICY[p]))), h("div", h("b", "New Devices"), h("p", "What a device gets the first time it shows up. It's flagged as new either way."))))),
           h("div.col", { "data-k": "fw-hard-side" },
             panel("Lists Downloaded", null, d.feeds.length ? table(["List", "Entries#", "Fetched"], d.feeds.map((f) => h("tr", h("td", f.name, f.error ? h("div.bad", f.error) : null), h("td.num", f.entries), h("td", when(f.fetched_at)))), "") : h("p.empty.padded", "Nothing downloaded. Lists download when you turn on a feature that needs them.")),
             panel("About Hardening", null,
@@ -1470,9 +1547,9 @@
         const names = Object.entries(d.all_countries).sort((a, b) => a[1].localeCompare(b[1]));
         // A tick applies straight away; ticks close together go as one change.
         const apply = () => { clearTimeout(geoSoon); geoSoon = setTimeout(() => change("/api/firewall", { countries: [...ctry.querySelectorAll("input:checked")].map((i) => i.value) }), 400); };
-        const ctry = h("div.countries" + (geoReady ? "" : ".off"), { "data-k": "ctry", "data-ref": "" }, names.map(([code, name]) => h("label.check", h("input", { type: "checkbox", checked: chosen.has(code), value: code, onchange: apply }), name)));
+        const ctry = h("div.countries" + (geoReady ? "" : ".off"), { "data-k": "ctry", "data-ref": "" }, names.map(([code, name]) => h("label.check", h("input", { type: "checkbox", disabled: !can("admin"), checked: chosen.has(code), value: code, onchange: apply }), name)));
         body = h("div.body.two",
-          h("div.col", { "data-k": "fw-geo" }, grow(panel("Countries", geoReady ? h("span.mute", "Changes apply as you tick") : null, h("div.fillin", ctry)))),
+          h("div.col", { "data-k": "fw-geo" }, grow(panel("Countries", geoReady && can("admin") ? h("span.mute", "Changes apply as you tick") : null, h("div.fillin", ctry)))),
           h("div.col", { "data-k": "fw-geo-side" },
             panel("About Geo-Blocking", null,
               geoReady ? h("div", h("p.hint", "Traffic to and from ticked countries is stopped, both ways. Trusted devices skip this. " + chosen.size + " ticked."), h("p.notice", "Big sites use servers in many countries. If something breaks after ticking, check the Troubleshooter.")) : h("p.notice", "Country blocking needs the location database. ", h("a", { href: "/settings/general#geo" }, "Turn It On in Settings → Time and Location"), "."),
@@ -1499,7 +1576,7 @@
   const CHOICE = [["allow", "Allow"], ["block_wan", "Block from WAN"], ["block_lan", "Block from LAN"], ["block_both", "Block Both"]];
   function choiceSeg(cur, pick, withGlobal) {
     const opts = withGlobal ? [["global", "Same as Global"]].concat(CHOICE) : CHOICE;
-    return h("div.seg.choice", opts.map(([k, t]) => h("button" + (cur === k ? ".on." + k : ""), { onclick: () => cur !== k && pick(k) }, t)));
+    return h("div.seg.choice", opts.map(([k, t]) => h("button" + (cur === k ? ".on." + k : ""), { disabled: !can("admin"), onclick: () => cur !== k && pick(k) }, t)));
   }
   function ports() {
     const perDevice = PATH === "/ports/devices";
@@ -1525,11 +1602,11 @@
             p.set ? null : h("div.mute", "Not set yet, so it's blocked from WAN."),
             p.overrides ? h("div", h("a", { href: "/ports/devices" }, p.overrides + " device" + (p.overrides === 1 ? " has" : "s have") + " its own setting"), p.set ? "; the global rule applies to it." : ".") : null),
           h("td", choiceSeg(p.set ? p.choice : "", (c) => set(p, "", c)),
-            p.custom ? [" ", h("button.small.quiet", { onclick: () => change("/api/ports", { action: "remove", proto: p.proto, port: p.port, mac: "" }) }, "Remove")] : null)));
+            p.custom && can("admin") ? [" ", h("button.small.quiet", { onclick: () => change("/api/ports", { action: "remove", proto: p.proto, port: p.port, mac: "" }) }, "Remove")] : null)));
         const proto = h("select", h("option", { value: "tcp" }, "TCP"), h("option", { value: "udp" }, "UDP"));
         const port = h("input", { type: "number", min: 1, max: 65535, placeholder: "Port", style: "width:100px" });
         const ch = h("select", CHOICE.map(([k, t]) => h("option", { value: k }, t)));
-        const add = adding
+        const add = !can("admin") ? null : adding
           ? h("div.row", { style: "margin-top:8px" }, proto, port, ch,
             h("button", { onclick: () => port.value && change("/api/ports", { action: "add", proto: proto.value, port: port.value, mac: "", choice: ch.value }, () => { adding = false; refresh(); }) }, "Add"),
             h("button.quiet", { onclick: () => { adding = false; refresh(); } }, "Cancel"))
@@ -1562,7 +1639,7 @@
               h("div", h("b", v.label), h("div.mute", v.ip || v.mac)),
               h("span" + (v.own ? ".pill.own" : ".mute"), v.own ? v.own + " own setting" + (v.own === 1 ? "" : "s") : "same as global")),
             isOpen ? [v.shut ? h("div.mute", "Set to " + POLICY[v.shut] + ", so ports stay shut for it anyway.") : null,
-              v.ports && v.ports.length ? v.ports.map((p) => portRow(v, p)) : h("p.empty", "No ports seen yet."), addRow(v)] : null);
+              v.ports && v.ports.length ? v.ports.map((p) => portRow(v, p)) : h("p.empty", "No ports seen yet."), can("admin") ? addRow(v) : null] : null);
         };
         const sel = (val, opts, setv) => h("select", { onchange: (e) => { setv(e.target.value); limit = 100; refresh(); } }, opts.map(([k, t]) => h("option", { value: k, selected: k === val }, t)));
         body = h("div.body.one", grow(panel("Per Device", h("span.mute", d.with_own + " with their own settings"),
@@ -1740,7 +1817,7 @@
 
   function updatesPage() {
     every(2000, async () => {
-      const d = await api("/api/settings");
+      const d = await settingsOrStatus();
       const st = d.status || {};
       statusBox(st);
       let u;
@@ -1757,6 +1834,7 @@
       const busy = !!prog.busy;
       const canInstall = u.newer && !busy && u.latest;
       const checkBtn = h("button", {
+        perm: "updates_check",
         disabled: busy,
         onclick: async () => {
           try {
@@ -1766,10 +1844,12 @@
         }
       }, "Check Now");
       const installBtn = h("button", {
+        perm: "admin",
         disabled: !canInstall,
         onclick: () => updateInstallAsk(u)
       }, "Install Update");
       const rollBtn = h("button.quiet", {
+        perm: "admin",
         disabled: !u.previous || busy,
         title: u.previous ? "" : "No earlier version kept",
         onclick: () => rollbackAsk({ previous: u.previous, current: u.current, lost: (d.release && d.release.lost) || [], schema_differs: !!(d.release && d.release.schema_differs) })
@@ -1841,7 +1921,7 @@
 
   function helpPage() {
     every(0, async () => {
-      const d = await api("/api/settings");
+      const d = await settingsOrStatus();
       const st = d.status || {};
       statusBox(st);
       let bundle;
@@ -1874,7 +1954,7 @@
   }
   function aboutPage() {
     every(0, async () => {
-      const d = await api("/api/settings");
+      const d = await settingsOrStatus();
       const s = d.status || {};
       statusBox(s);
       let license = "";
@@ -1915,6 +1995,7 @@
       catch (e) { actionError = e.message; message.textContent = actionError; }
       finally { action.disabled = false; clearTimeout(next); await poll(); }
     } }, "Run speed test");
+    action.hidden = !can("speed_run");
     const values = h("div.row", { style: "justify-content:space-between;gap:16px;margin:12px 0" });
     const message = h("p.hint", { style: "margin-bottom:0", "aria-live": "polite" }, "Loading test status…");
     const progress = h("progress", { max: 100, value: 0, hidden: true, style: "width:100%;accent-color:var(--blue)" });
@@ -1950,11 +2031,273 @@
     return root;
   }
 
+  // ---------- Users ----------
+  const yesMark = () => h("span.ok", "✓");
+  const noMark = () => h("span.mute", "-");
+  const dayOf = (t) => t ? fmtDate(local(t)) : "";
+  function copyText(input, btn) {
+    const done = () => { btn.textContent = "Copied"; };
+    input.select();
+    if (navigator.clipboard && window.isSecureContext) navigator.clipboard.writeText(input.value).then(done, () => { document.execCommand("copy"); done(); });
+    else { document.execCommand("copy"); done(); }
+  }
+  // Shown once when a key or signing secret is made; it can't be read back.
+  function copyNowBox(title, text, value) {
+    // The whole value stays in view: it wraps instead of scrolling sideways.
+    const input = h("textarea.copyval", { readonly: true, rows: 1, spellcheck: false }, value);
+    const copy = h("button", { onclick: () => copyText(input, copy) }, "Copy");
+    showBox(h("h3", title), h("p", text), h("div.row", input, copy), h("div.acts", h("button", { onclick: () => { hideBox(); refresh(); } }, "Done")));
+    const fit = () => { input.style.height = "auto"; input.style.height = input.scrollHeight + 2 + "px"; };
+    fit();
+    new ResizeObserver(fit).observe(overlay.firstChild);
+    input.focus(); input.select();
+  }
+  function keyBox(key) {
+    copyNowBox("Copy the Key Now", "This is the only time the whole key is shown. Paste it where the API will be used, such as Jarvis.", key);
+  }
+  function usersPage() {
+    const err = h("p.err");
+    every(5000, async () => {
+      const [st, d] = await Promise.all([api("/api/status"), api("/api/users")]);
+      statusBox(st);
+      const pw = h("input", { id: "my-pw", type: "password", placeholder: "New password", autocomplete: "new-password", style: "flex:1 1 auto" });
+      const users = d.users.map((u) => h("tr", { "data-key": u.name },
+        h("td", u.name, u.name === d.me ? [" ", h("span.mute", "(you)")] : null),
+        h("td", h("span.pill." + (u.role === "admin" ? "trusted" : "normal"), u.role === "admin" ? "Admin" : "Custom")),
+        h("td", u.web ? yesMark() : noMark()), h("td", u.api ? yesMark() : noMark()),
+        h("td.num", h("button.small.quiet", { onclick: () => userEdit(d, u) }, "Edit"),
+          u.name === d.me ? null : [" ", h("button.small.danger", { onclick: () => ask("Remove " + u.name + "?", "Their sign-ins end and their API key stops working at once.", "Remove", () => userPost({ action: "remove", name: u.name })) }, "Remove")])));
+      const sessions = d.sessions.map((x) => h("tr", { "data-key": x.id },
+        h("td", x.user), h("td", x.ip), h("td", when(x.started)),
+        h("td.num", h("button.small.quiet", { onclick: () => userPost({ action: "end_session", id: x.id }) }, "Sign out"))));
+      const keys = d.users.filter((u) => u.has_key).map((u) => h("tr", { "data-key": u.name },
+        h("td", u.name), h("td", u.key_hint), h("td", u.key_used ? when(u.key_used) : "never"), h("td", u.key_from || h("span.mute", "-")),
+        h("td.num", h("button.small.danger", { onclick: () => ask("Revoke the key for " + u.name + "?", "Anything using this key stops working at once.", "Revoke", () => userPost({ action: "revoke_key", name: u.name })) }, "Revoke"))));
+      render(
+        header("Settings · Users", st), pendingNote(st), err.textContent ? err : null,
+        h("div.body.two",
+          h("div.col", { "data-k": "users-l" },
+            panel("Users", h("button", { onclick: () => userEdit(d, null) }, "Add User"),
+              table(["Name", "Type", "Web", "API", "#"], users, "No users."),
+              h("p.hint", "Admins can do everything. Custom users can only do what you tick for them. Each user can sign in on this page, use the API with a key, or both.")),
+            grow(panel("Your Password", null,
+              h("label", { for: "my-pw" }, "New password (10 or more characters)"),
+              h("div.row", pw, h("button", { onclick: async () => { if (await userPost({ action: "password", password: pw.value })) { pw.value = ""; showBox(h("h3", "Password Changed"), h("p", "Use the new password next time you sign in."), h("div.acts", h("button", { onclick: hideBox }, "OK"))); } } }, "Change"))))),
+          h("div.col", { "data-k": "users-r" },
+            panel("Signed In", null, table(["User", "From", "Since", "#"], sessions, "Nobody is signed in.")),
+            grow(panel("API Keys", null,
+              table(["User", "Key", "Last used", "From", "#"], keys, "No API keys yet. Edit a user and turn on Use the API with a key."),
+              h("p.hint", "A key works until it's revoked or its user is removed. The whole key is shown once, when it's made. Send it in the Authorization header as ", h("b", "Bearer fgk_…")),
+              h("div.row", { style: "margin-top:8px" }, h("a.btn.quiet", { href: "/settings/api" }, "Open the API Reference")))))));
+      async function userPost(body) {
+        err.textContent = "";
+        try { await api("/api/users", body); refresh(); return true; }
+        catch (e) { err.textContent = e.message; return false; }
+      }
+    });
+  }
+  // Add (u = null) or edit one user. Nothing changes until Save.
+  function userEdit(d, u) {
+    const isNew = !u;
+    u = u || { name: "", role: "custom", perms: [], web: false, api: true, has_password: false, has_key: false };
+    let role = u.role;
+    const err = h("p.err");
+    const name = h("input", { id: "ue-name", value: u.name, autocomplete: "off" });
+    const web = h("input", { type: "checkbox", checked: u.web });
+    const apiOn = h("input", { type: "checkbox", checked: u.api });
+    const pw = h("input", { id: "ue-pw", type: "password", autocomplete: "new-password", placeholder: u.has_password ? "Leave empty to keep the current one" : "10 or more characters", disabled: !u.web });
+    web.addEventListener("change", () => { pw.disabled = !web.checked; });
+    const segBtn = (k, t) => h("button" + (role === k ? ".on.isOn" : ""), { type: "button", "data-role": k, onclick: (e) => {
+      role = k;
+      seg.querySelectorAll("button").forEach((b) => b.classList.toggle("on", b === e.currentTarget));
+      seg.querySelectorAll("button").forEach((b) => b.classList.toggle("isOn", b === e.currentTarget));
+      lockViews();
+    } }, t);
+    const seg = h("div.seg", segBtn("admin", "Admin"), segBtn("custom", "Custom"));
+    const chk = (p) => h("label.check", h("input", { type: "checkbox", value: p.id, checked: u.perms.includes(p.id), disabled: role === "admin" }), " " + p.label);
+    const group = (g) => [h("h4", g), d.perms.filter((p) => p.group === g).map(chk)];
+    const permBox = h("div", group("Monitoring"), group("Actions"));
+    // An action needs its view (d.implies: [action, view]): a ticked action
+    // ticks its view and holds it on until the action is unticked.
+    const lockViews = () => {
+      const box = (id) => permBox.querySelector('input[value="' + id + '"]');
+      permBox.querySelectorAll("input").forEach((i) => { i.disabled = role === "admin"; i.parentNode.title = ""; });
+      if (role === "admin") return;
+      (d.implies || []).forEach(([a, v]) => {
+        const ai = box(a), vi = box(v);
+        if (ai && vi && ai.checked) { vi.checked = true; vi.disabled = true; vi.parentNode.title = "Needed by another ticked permission"; }
+      });
+    };
+    permBox.addEventListener("change", lockViews);
+    lockViews();
+    const keyLine = isNew ? h("div.row", h("span.mute", "A key is made when you save."))
+      : h("div.row", h("span.mute", u.has_key ? u.key_hint + ", made " + dayOf(u.key_made) : "No key yet"));
+    const keyBtns = isNew ? null : h("div.row", { style: "margin-top:6px" },
+      h("button.small.quiet", { type: "button", onclick: async () => {
+        err.textContent = "";
+        try { const r = await api("/api/users", { action: "new_key", name: u.name }); keyBox(r.key); } catch (e) { err.textContent = e.message; }
+      } }, "New Key"),
+      u.has_key ? h("button.small.danger", { type: "button", onclick: async () => {
+        err.textContent = "";
+        try { await api("/api/users", { action: "revoke_key", name: u.name }); hideBox(); refresh(); } catch (e) { err.textContent = e.message; }
+      } }, "Revoke") : null);
+    const save = h("button", { onclick: async () => {
+      err.textContent = "";
+      const perms = [...permBox.querySelectorAll("input:checked")].map((i) => i.value);
+      const body = { action: "save", old_name: isNew ? "" : u.name, name: name.value.trim(), role, perms: role === "admin" ? [] : perms, web: web.checked, api: apiOn.checked, password: web.checked ? pw.value : "" };
+      try {
+        await api("/api/users", body);
+        // A new user with the API switched on gets a key straight away.
+        if (isNew && apiOn.checked) { const r = await api("/api/users", { action: "new_key", name: body.name }); keyBox(r.key); return; }
+        hideBox(); refresh();
+      } catch (e) { err.textContent = e.message; }
+    } }, "Save");
+    showBox(h("h3", isNew ? "Add User" : "Edit User: " + u.name),
+      h("div.grid2",
+        h("div",
+          h("h4", "Who"), h("label", { for: "ue-name" }, "Name"), name,
+          h("label", "Type"), seg,
+          h("h4", "How This User Gets In"),
+          h("label.check", web, " Sign in on this page"), h("label.check", apiOn, " Use the API with a key"),
+          h("label", { for: "ue-pw" }, "Password (for signing in on this page)"), pw,
+          h("label", "API key"), keyLine, keyBtns),
+        permBox),
+      h("p.hint", "Firewall mode, ports, settings, updates, backup, certificates and users stay with admins."),
+      err,
+      h("div.acts", h("button.quiet", { onclick: hideBox }, "Cancel"), save));
+    overlay.firstChild.classList.add("wide");
+  }
+
+  // ---------- Notifications ----------
+  const EVENT_TEXT = {
+    new_device: ["New device on the network", "A device that hasn't been seen before."],
+    look: ["Needs a look", "Alerts the gateway thinks you should check: threats, scans, bursts."],
+    blocked: ["Blocked connections", "Every stopped connection. This can be many per minute."],
+    audit: ["Audit (would have been blocked)", ""],
+    settings: ["Settings changed", "Who changed what, and whether it was kept."],
+    update: ["Update available", ""],
+    started: ["Gateway started", "After a restart or power loss."],
+  };
+  const shortWhen = (t) => {
+    if (!t) return "never";
+    const today = local(Math.floor(Date.now() / 1000)).toISOString().slice(0, 10);
+    return local(t).toISOString().slice(0, 10) === today ? fmtTime(local(t)) : when(t);
+  };
+  const hostOf = (u) => { try { return new URL(u).host; } catch (e) { return u; } };
+  function sendResult(r) {
+    if (r.result === "delivered") return r.tries > 1 ? h("td.warn", "Retried, delivered " + shortWhen(r.done_at)) : h("td.ok", "Delivered");
+    if (r.result === "retrying") return h("td.warn", "Retrying", r.error ? ": " + r.error : "");
+    if (r.result === "failed") return h("td.bad", "Not delivered", r.error ? ": " + r.error : "");
+    return h("td.bad", "Dropped", r.error ? ": " + r.error : "");
+  }
+  function notifyPage() {
+    const err = h("p.err");
+    let sel = null, draft = null;
+    every(5000, async () => {
+      const [st, d] = await Promise.all([api("/api/status"), api("/api/notify")]);
+      statusBox(st);
+      if (sel !== "new" && !d.dests.some((x) => x.id === sel)) { sel = d.dests.length ? d.dests[0].id : "new"; draft = null; }
+      const saved = d.dests.find((x) => x.id === sel) || { id: "", name: "", url: "", events: ["new_device", "look", "settings", "update", "started"], secret_made: 0 };
+      if (!draft) draft = { name: saved.name, url: saved.url, events: saved.events.slice() };
+      const pick = (id) => { sel = id; draft = null; err.textContent = ""; refresh(); };
+      const post = async (body) => {
+        err.textContent = "";
+        try { const r = await api("/api/notify", body); return r; } catch (e) { err.textContent = e.message; refresh(); return null; }
+      };
+      const secretBox = (sec) => copyNowBox("Copy the Signing Secret Now", "This is the only time the secret is shown. Paste it into the receiver, such as Jarvis, so it can check each message.", sec);
+      const dests = d.dests.map((x) => h("tr" + (x.id === sel ? ".on" : ""), { "data-key": x.id },
+        h("td", x.name), h("td.nowrap", hostOf(x.url)),
+        h("td.nowrap" + (x.last_result === "delivered" ? ".ok" : x.last_result === "retrying" ? ".warn" : x.last_result ? ".bad" : ""),
+          x.last_sent ? shortWhen(x.last_sent) + ", " + (x.last_result === "failed" ? "not delivered" : x.last_result) : "never"),
+        h("td.num", h("button.small.quiet", { onclick: () => pick(x.id) }, "Edit"), " ",
+          h("button.small.quiet", { onclick: async () => { if (await post({ action: "test", id: x.id })) refresh(); } }, "Send Test"))));
+      const recent = d.recent.map((r) => h("tr", { "data-key": "r" + r.seq },
+        h("td.nowrap", shortWhen(r.at)), h("td.nowrap", r.to), h("td", r.what), sendResult(r)));
+      const name = h("input", { id: "nd-name", value: draft.name, style: "width:100%", oninput: (e) => { draft.name = e.target.value; } });
+      const url = h("input", { id: "nd-url", value: draft.url, placeholder: "http://192.168.1.40:8797/foilgateway", style: "width:100%", oninput: (e) => { draft.url = e.target.value; } });
+      const evs = d.events.map((ev) => {
+        const [label, hint] = EVENT_TEXT[ev.id] || [ev.title, ""];
+        const box = h("input", { type: "checkbox", checked: draft.events.includes(ev.id), onchange: (e) => {
+          draft.events = draft.events.filter((x) => x !== ev.id);
+          if (e.target.checked) draft.events.push(ev.id);
+        } });
+        return [h("label.check", box, " " + label), hint ? h("div.hint", { style: "margin:-4px 0 4px 26px" }, hint) : null];
+      });
+      const isNew = sel === "new";
+      const save = async () => {
+        const r = await post({ action: "save", id: saved.id, name: draft.name, url: draft.url, events: draft.events });
+        if (!r) return;
+        if (isNew) { sel = (r.dests.find((x) => x.name.toLowerCase() === draft.name.trim().toLowerCase()) || {}).id || null; draft = null; secretBox(r.secret); }
+        else { draft = null; refresh(); }
+      };
+      render(
+        header("Settings · Notifications", st), pendingNote(st), err.textContent ? err : null,
+        h("div.body.two",
+          h("div.col", { "data-k": "notify-l" },
+            panel("Where Notifications Go", h("button", { onclick: () => pick("new") }, "Add Destination"),
+              table(["Name", "Address", "Last sent", "#"], dests, "No destinations yet."),
+              h("p.hint", "When something happens, the gateway sends it to each address straight away as a short JSON message. New devices, needs-a-look and blocked messages go once per device every 5 minutes; the rest of those 5 minutes arrive as one message with a count. Sign-ins aren't sent. If an address can't be reached, the gateway tries again for 10 minutes. Email comes in a later version.")),
+            grow(panel("Recent Sends", null, table(["When", "To", "What", "Result"], recent, "Nothing sent yet.")))),
+          h("div.col", { "data-k": "notify-r" },
+            grow(panel(isNew ? "New Destination" : "Destination: " + saved.name, null,
+              h("label", { for: "nd-name" }, "Name"), name,
+              h("label", { for: "nd-url" }, "Address"), url,
+              h("label", "Signing secret"),
+              h("div.row", isNew ? h("span.mute", "Made when you save") : [h("span.mute", "Set " + dayOf(saved.secret_made)),
+                h("button.small.quiet", { onclick: () => ask("Make a New Secret?", "The old secret stops working at once. Messages are rejected until the receiver has the new one.", "Make New Secret", async () => { const r = await post({ action: "new_secret", id: saved.id }); if (r) secretBox(r.secret); }) }, "New Secret")]),
+              h("p.hint", "Each message is signed with this secret so the receiver can tell it came from this gateway."),
+              h("label", "Send these"), evs,
+              h("div.row", { style: "margin-top:14px;justify-content:flex-end" },
+                isNew ? null : h("button.danger", { onclick: () => ask("Remove " + saved.name + "?", "Nothing more is sent to this address.", "Remove", async () => { if (await post({ action: "remove", id: saved.id })) { sel = null; draft = null; refresh(); } }) }, "Remove"),
+                h("button.quiet", { onclick: () => { if (isNew) sel = null; draft = null; err.textContent = ""; refresh(); } }, "Cancel"),
+                h("button", { onclick: save }, "Save")))))));
+    });
+  }
+  // ---------- API Reference ----------
+  function apiRefPage() {
+    every(0, async () => {
+      const [st, d] = await Promise.all([api("/api/status"), api("/api/reference")]);
+      statusBox(st);
+      const label = {};
+      d.perms.forEach((p) => { label[p.id] = p.label; });
+      const needs = (n) => n === "any" ? h("span.mute", "Anyone signed in") : h("code", n);
+      render(
+        header("Settings · API Reference", st),
+        h("div.body.two",
+          h("div.col", { "data-k": "ref-l" },
+            grow(panel("Calls", null,
+              table(["Method", "Path", "Needs", "What it does"], d.routes.map((r) => h("tr", h("td", r.method), h("td.nowrap", h("code", r.path)), h("td.nowrap", needs(r.needs)), h("td", r.what))), "No calls."),
+              h("p.hint", "Admins can make every call, including ones not listed here. Anything not listed is for admins only. A call the key's user isn't allowed to make gets 403.")))),
+          h("div.col", { "data-k": "ref-r" },
+            panel("Using a Key", null,
+              h("p", "Send the key in the Authorization header as ", h("b", "Bearer fgk_…"), ". Make a key in Settings, Users. The user must have Use the API with a key turned on."),
+              h("p.hint", "Wrong keys count toward the same lockout as wrong passwords. Answers are JSON. Calls that change something take a JSON body.")),
+            panel("Permissions", null,
+              table(["Name", "Group", "Lets the user"], d.perms.map((p) => h("tr", h("td.nowrap", h("code", p.id)), h("td", p.group), h("td", p.label))), "")),
+            grow(panel("Notifications", null,
+              h("p", "Each message is a POST with a JSON body: gateway, version, event, title, text, device and at (Unix time)."),
+              h("p", "Headers: ", h("code", "X-FoilGateway-Event"), ", ", h("code", "X-FoilGateway-Timestamp"), " and ", h("code", "X-FoilGateway-Signature"), "."),
+              h("p.hint", "The signature is sha256= followed by the HMAC-SHA256, in hex, of the timestamp, a dot, and the raw body, keyed with the destination's signing secret. Events: " + Object.keys(EVENT_TEXT).join(", ") + ", and test from Send Test. For new_device, look and blocked, the first message for a device goes at once; later ones within 5 minutes come as one message whose text starts with the count."))))));
+    });
+  }
+  // ---------- Settings for custom users: the speed test only ----------
+  function speedOnlyPage() {
+    every(0, async () => {
+      const st = await api("/api/status");
+      statusBox(st);
+      render(header("Settings · Speed Test", st), h("div.body.two", h("div.col", { "data-k": "speed-l" }, speedTestPanel()), h("div.col", { "data-k": "speed-r" })));
+    });
+  }
+
   function settings() {
     shell("Settings");
     if (PATH === "/settings/help") return helpPage();
     if (PATH === "/settings/about") return aboutPage();
     if (PATH === "/settings/updates") return updatesPage();
+    if (PATH === "/settings/users" || PATH === "/settings/account") return usersPage();
+    if (PATH === "/settings/notify") return notifyPage();
+    if (PATH === "/settings/api") return apiRefPage();
+    if (!ME.admin) return speedOnlyPage();
     if (new URLSearchParams(location.search).has("confirm")) api("/api/confirm", {}).catch(() => {});
     let picked = null, unlocked = false, addr = null;
     every(0, async () => {
@@ -1971,8 +2314,6 @@
       const safeOn = h("input", { type: "checkbox", checked: c.safety });
       const sure = h("input", { type: "checkbox" });
       const port = h("input", { type: "number", min: 1, max: 65535, value: c.admin_port, style: "width:110px" });
-      const nu = h("input", { placeholder: "Name" }), np = h("input", { type: "password", placeholder: "Password" });
-      const mp = h("input", { type: "password", placeholder: "New password" });
       const tz = h("select", d.timezones.map((z) => h("option", { value: z, selected: z === d.timezone }, z)));
       const file = h("input", { type: "file", accept: ".json,application/json" });
       const savePorts = () => {
@@ -2033,10 +2374,6 @@
               h("label.check", h("input", { type: "radio", name: "af", checked: c.admin_from === "lan", onchange: () => run({ action: "admin_from", admin_from: "lan" }) }), "Only Devices Behind the Gateway (Safer)")),
         adminport: () => panel("Settings port", null, h("p.hint", "The HTTPS port for this page. It’s kept open for the safety computers. After a change, open the new address within the countdown  -  " + undoHint(c.rollback_secs)), h("div.row", port, h("button", { onclick: () => run({ action: "admin_port", admin_port: Number(port.value) }) }, "Change Port"))),
         geo: () => h("div", { id: "geo" }, geoPanel(d.geo)),
-        admins: () => panel("Admins", null, table(["Name", ""], d.users.map((u) => h("tr", h("td", u.name, u.name === d.status.user ? h("span.mute", " (you)") : null), h("td.num", d.users.length > 1 ? h("button.small.danger", { onclick: () => confirm("Remove " + u.name + "?") && run({ action: "remove_user", name: u.name }) }, "Remove") : null))), ""),
-              h("label", "Add an admin (passwords need 10 or more characters)"), h("div.row", nu, np, h("button", { onclick: () => run({ action: "add_user", name: nu.value, password: np.value }) }, "Add")),
-              h("label", "Change your password"), h("div.row", mp, h("button", { onclick: () => run({ action: "password", password: mp.value }) }, "Change"))),
-        sessions: () => panel("Signed in", null, table(["Admin", "From", "Since", ""], d.sessions.map((s) => h("tr", h("td", s.user), h("td", s.ip), h("td", when(s.started)), h("td.num", h("button.small.quiet", { onclick: () => run({ action: "end_session", id: s.id }) }, "Sign out")))), "Nobody.")),
         tz: () => panel("Time and Formats", null,
               h("p.hint", "Used for times on these pages and for when “today” starts."),
               h("label", "Time Zone"), h("div.row", tz, h("button", { onclick: () => run({ action: "timezone", timezone: tz.value }) }, "Save")),
@@ -2129,7 +2466,6 @@
         "/settings/certs": [["certs"], []],
         "/settings/general": [["tz"], ["geo"]],
         "/settings/log": [["log"], []],
-        "/settings/account": [["admins"], ["sessions"]],
         "/settings/setup": [["setup"], ["backup"]],
         "/settings/view": [["view"], []],
       };
@@ -2439,5 +2775,20 @@
     })();
   }
 
-  ({ dashboard, devices, firewall, ports, log, settings, login, setup })[PAGE]();
+  const pages = { dashboard, devices, firewall, ports, log, settings, login, setup };
+  if (PAGE === "login" || PAGE === "setup") pages[PAGE]();
+  else {
+    // Learn who is signed in before drawing, so nothing they can't use shows.
+    api("/api/status").then((st) => {
+      ME = { admin: !!st.admin, perms: st.perms || [] };
+      // Signing in opens "/". A user who can't see the Dashboard goes to
+      // the first page they can open instead; other links keep Not Available.
+      if (PATH === "/" && !pageOk("dashboard")) return location.replace(firstPage());
+      const sub = SUBS[PAGE] && SUBS[PAGE].some(([u]) => u === navPath);
+      if (pageOk(PAGE) && (!sub || subOk(navPath))) return pages[PAGE]();
+      shell("Not Available");
+      statusBox(st);
+      render(header("Not Available", st), h("div.body.one", panel("Not Available", null, h("p", "This user can't open this page. An admin can change what this user may do in Settings, Users."))));
+    }).catch(() => pages[PAGE]());
+  }
 })();

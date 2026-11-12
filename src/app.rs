@@ -13,7 +13,26 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 
+thread_local! {
+    /// Who the request on this thread is for. Set by the web layer before a
+    /// route runs, so a change can record its owner. Empty: the gateway itself.
+    static ACTOR: std::cell::RefCell<String> = const { std::cell::RefCell::new(String::new()) };
+}
+
+pub fn set_actor(name: &str) {
+    ACTOR.with(|a| *a.borrow_mut() = name.to_string());
+}
+
+impl Pending {
+    /// Only the user who made the change, or an admin, can keep it.
+    pub fn may_keep(&self, user: &str, admin: bool) -> bool {
+        admin || (!self.by.is_empty() && self.by == user)
+    }
+}
+
 pub struct Pending {
+    /// The user who made the change. Only they or an admin can keep it.
+    pub by: String,
     pub deadline: Instant,
     pub secs: u64,
     old_cfg: Option<String>,
@@ -454,6 +473,7 @@ impl App {
         policy.save(&self.policy_path())?;
         *self.policy.write().unwrap() = policy;
         *self.pending.lock().unwrap() = Some(Pending {
+            by: ACTOR.with(|a| a.borrow().clone()),
             deadline: Instant::now() + Duration::from_secs(c.rollback_secs),
             secs: c.rollback_secs,
             old_cfg: old_cfg_text,
@@ -511,6 +531,19 @@ impl App {
     }
 
     /// The browser reached us after a change, so keep it.
+    /// Keep the waiting change for a user: only the user who made it, or an admin.
+    pub fn confirm_pending_as(&self, from: &str, user: &str, admin: bool) -> bool {
+        let mine = self.pending.lock().unwrap().as_ref().is_some_and(|p| p.may_keep(user, admin));
+        mine && self.confirm_pending(from)
+    }
+
+    /// For tests: a change waiting to be kept, made by `by`.
+    #[cfg(test)]
+    pub fn test_pending(&self, by: &str) {
+        let old_policy = self.policy.read().unwrap().clone();
+        *self.pending.lock().unwrap() = Some(Pending { by: by.into(), deadline: Instant::now() + Duration::from_secs(60), secs: 60, old_cfg: None, old_policy, what: "test".into(), new_port: None, addr_changed: false });
+    }
+
     pub fn confirm_pending(&self, from: &str) -> bool {
         let Some(p) = self.pending.lock().unwrap().take() else { return false };
         let _ = crate::confirm();

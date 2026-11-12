@@ -141,6 +141,7 @@ pub fn serve(app: App) -> Result<(), String> {
     let tls = cert(&app.dir)?;
     let port = app.cfg.read().unwrap().as_ref().map(|c| c.admin_port).unwrap_or(8443);
     let port = std::env::var("FOILGW_PORT").ok().and_then(|p| p.parse().ok()).unwrap_or(port);
+    crate::notify::start(&app.dir);
     app.log.note("setting", &format!("FoilGateway {} started, settings page on port {port}.", env!("CARGO_PKG_VERSION")));
     if app.cfg.read().unwrap().is_some() && !app.needs_setup() {
         // Put the saved rules back after a restart.
@@ -344,7 +345,9 @@ fn spa_page(path: &str) -> Option<Resp> {
         "/settings" => page("settings", "Settings"),
         "/settings/general" => page("settings", "Time and location"),
         "/settings/log" => page("settings", "Capture Log settings"),
-        "/settings/account" => page("settings", "Account"),
+        "/settings/account" | "/settings/users" => page("settings", "Users"),
+        "/settings/notify" => page("settings", "Notifications"),
+        "/settings/api" => page("settings", "API Reference"),
         "/settings/setup" => page("settings", "Setup"),
         "/settings/certs" => page("settings", "Certificates"),
         "/settings/view" => page("settings", "View"),
@@ -370,6 +373,8 @@ fn s(v: &Value, k: &str) -> String {
 }
 
 fn route(app: &Arc<App>, req: &Req) -> Resp {
+    // Worker threads are reused: nobody owns a change until guarded() says who.
+    crate::app::set_actor("");
     let p = req.path.as_str();
     match p {
         "/s/style.css" => return resp(200, "text/css", asset("style.css", CSS)),
@@ -406,12 +411,32 @@ fn route(app: &Arc<App>, req: &Req) -> Resp {
         }
         _ => {}
     }
+    // An API key in the Authorization header. A browser can't send this
+    // header to another site without that site agreeing first, so key
+    // requests don't need the X-FG header. Cookies are ignored for them.
+    let bearer = req.headers.get("authorization").map(|v| v.trim().strip_prefix("Bearer ").unwrap_or("").trim().to_string());
+    if let Some(key) = bearer {
+        if !p.starts_with("/api/") || p == "/api/login" || p == "/api/logout" {
+            return resp(404, "text/plain", "Not found");
+        }
+        if setup_open(app) || app.setup_mode() {
+            return resp(503, "application/json", json!({"error": "The gateway is in setup."}).to_string());
+        }
+        return match app.auth.key_login(&key, &req.ip) {
+            Ok(who) => guarded(app, req, who, ""),
+            Err(e) => {
+                app.log.note("alert", &format!("A wrong API key was used from {}.", req.ip));
+                resp(if e.starts_with("Too many") { 429 } else { 401 }, "application/json", json!({"error": e}).to_string())
+            }
+        };
+    }
     // Every change needs this header. Other sites can't add it without asking first.
     if req.method == "POST" && req.headers.get("x-fg").map(String::as_str) != Some("1") {
         return resp(403, "text/plain", "missing X-FG header");
     }
     let token = cookie(req);
-    let user = app.auth.user_for(&token);
+    // A session whose user was removed counts as signed out.
+    let user = app.auth.user_for(&token).filter(|n| app.auth.who(n).is_some());
 
     // The reconnect check in the setup page: anything that answers will do.
     if p == "/api/ping" {
@@ -456,10 +481,19 @@ fn route(app: &Arc<App>, req: &Req) -> Resp {
         if app.wizard.lock().unwrap().applied.is_some() {
             return setup_confirm(app, req);
         }
-        return ok(json!({ "kept": app.confirm_pending(&req.ip) }));
+        let admin = app.auth.who(&user).is_some_and(|w| w.admin);
+        return ok(json!({ "kept": app.confirm_pending_as(&req.ip, &user, admin) }));
     }
     if app.setup_mode() {
-        if let Some(r) = setup_route(app, req) {
+        // Running setup again changes ports and addresses: admins only.
+        if !app.auth.who(&user).is_some_and(|w| w.admin) {
+            if p == "/setup" {
+                return resp(403, "text/plain", "An admin is running setup. Try again when it's done.");
+            }
+            if p.starts_with("/api/setup") {
+                return resp(403, "application/json", json!({"error": "Only an admin can run setup."}).to_string());
+            }
+        } else if let Some(r) = setup_route(app, req) {
             return r;
         }
         match p {
@@ -471,7 +505,153 @@ fn route(app: &Arc<App>, req: &Req) -> Resp {
     if let Some(r) = spa_page(p) {
         return r;
     }
+    let Some(who) = app.auth.who(&user) else { return resp(401, "application/json", json!({"error": "Please sign in again.", "redirect": "/login"}).to_string()) };
+    guarded(app, req, who, &token)
+}
+
+/// The API Reference: every route a key can use, what it needs, and what
+/// it does. The page and GET /api/reference both read this list.
+pub const ROUTES: &[(&str, &str, &str, &str)] = &[
+    ("GET", "/api/me", "any", "Who the key or session belongs to, and what it may do."),
+    ("GET", "/api/reference", "any", "This list."),
+    ("POST", "/api/confirm", "any", "Keep the change just made. A change waits for this and is undone when the undo time runs out (rollback_secs in /api/status) if nobody confirms it. Only the user who made the change, or an admin, can keep it; for anyone else kept is false. The page confirms for you; an API client sends this after each change."),
+    ("GET", "/api/status", "any", "Traffic path, mode, links and safety."),
+    ("GET", "/api/dashboard", "status", "Everything on the dashboard, including alerts not yet handled."),
+    ("GET", "/api/devices", "devices", "Every device, new and waiting devices included."),
+    ("GET", "/api/troubleshoot", "alerts", "What stopped a device's connections. Add ?mac=."),
+    ("GET", "/api/audit", "alerts", "Connections audit mode would have blocked."),
+    ("GET", "/api/firewall", "firewall_view", "Firewall mode, lists and rules."),
+    ("GET", "/api/ports", "firewall_view", "Open and watched ports."),
+    ("GET", "/api/log", "log", "Capture Log lines. Takes kind, q, since, sort, offset and limit."),
+    ("GET", "/api/log.txt", "log", "The Capture Log as a text file."),
+    ("GET", "/api/speed-test", "speed_view", "The last speed test results."),
+    ("GET", "/api/updates", "updates_view", "The installed version and whether a newer one is out."),
+    ("POST", "/api/device", "device_actions", "Block or allow a device, rename it, or mark it seen. Send mac with policy, name or seen. Sending allow or deny lists also needs the allow list or block list permission."),
+    ("POST", "/api/list", "block_list", "Add or remove a Black list entry. Send list \"black\" with add or remove set to the entry. With list \"white\" it needs the allow list permission. Adding an entry that is on the other list moves it, so that needs both permissions."),
+    ("POST", "/api/allow", "allow_list", "Allow something the Troubleshooter found. With reason \"devdeny\" it takes an entry off the device's deny list, so it also needs the block list permission."),
+    ("POST", "/api/alert", "handle_alerts", "Mark one alert handled. Send id. Only dashboard alerts (alert and device lines) can be cleared."),
+    ("POST", "/api/alerts/clear", "handle_alerts", "Mark several alerts handled. Send ids, up to 500. If any id isn't a dashboard alert (alert or device line), nothing is cleared."),
+    ("POST", "/api/audit", "handle_alerts", "Keep an audit finding as allowed. Send action \"keep\"."),
+    ("POST", "/api/ports", "handle_alerts", "Mark a port as seen. Send action \"seen\"."),
+    ("POST", "/api/speed-test", "speed_run", "Run or cancel a speed test. Send action \"run\" or \"cancel\"."),
+    ("POST", "/api/updates/check", "updates_check", "Ask GitHub for the latest release now."),
+];
+
+/// What a request needs from the user asking.
+#[derive(Debug, PartialEq)]
+enum Need {
+    Anyone,
+    Admin,
+    All(Vec<&'static str>),
+}
+
+/// The permission map for every route. Anything not named here is for
+/// admins only, so a new route can't be opened to Custom users by accident.
+fn need(req: &Req) -> Need {
+    use Need::*;
+    let one = |p: &'static str| All(vec![p]);
+    match (req.method.as_str(), req.path.as_str()) {
+        ("GET", "/api/status") | ("GET", "/api/me") | ("GET", "/api/reference") | ("POST", "/api/logout") | ("POST", "/api/confirm") => Anyone,
+        ("GET", "/api/dashboard") => one("status"),
+        ("GET", "/api/devices") => one("devices"),
+        ("GET", "/api/troubleshoot") | ("GET", "/api/audit") => one("alerts"),
+        ("GET", "/api/firewall") | ("GET", "/api/ports") => one("firewall_view"),
+        ("GET", "/api/log") | ("GET", "/api/log.txt") => one("log"),
+        ("GET", "/api/speed-test") => one("speed_view"),
+        ("GET", "/api/updates") | ("GET", "/api/updates/progress") | ("POST", "/api/updates/ack") => one("updates_view"),
+        ("POST", "/api/updates/check") => one("updates_check"),
+        ("POST", "/api/speed-test") => one("speed_run"),
+        ("POST", "/api/alert") | ("POST", "/api/alerts/clear") => one("handle_alerts"),
+        // Taking an entry off a device's deny list changes a block list too.
+        ("POST", "/api/allow") => {
+            if s(&body(req), "reason") == "devdeny" { All(vec!["allow_list", "block_list"]) } else { one("allow_list") }
+        }
+        ("POST", "/api/audit") => {
+            if s(&body(req), "action") == "keep" { one("handle_alerts") } else { Admin }
+        }
+        ("POST", "/api/ports") => {
+            if s(&body(req), "action") == "seen" { one("handle_alerts") } else { Admin }
+        }
+        ("POST", "/api/list") => match s(&body(req), "list").as_str() {
+            "black" => one("block_list"),
+            "white" => one("allow_list"),
+            _ => Admin,
+        },
+        ("POST", "/api/device") => {
+            let b = body(req);
+            if b["forget"].as_bool() == Some(true) {
+                return Admin;
+            }
+            let mut want = Vec::new();
+            if b["name"].is_string() || !b["policy"].is_null() || b["telemetry"].is_boolean() || b["seen"].as_bool() == Some(true) {
+                want.push("device_actions");
+            }
+            if b["allow"].is_array() {
+                want.push("allow_list");
+            }
+            if b["deny"].is_array() {
+                want.push("block_list");
+            }
+            if want.is_empty() { one("device_actions") } else { All(want) }
+        }
+        _ => Admin,
+    }
+}
+
+/// Per user: when the current 10-minute window started, calls refused in
+/// it, and the id of its dashboard alert.
+static REFUSALS: Mutex<Option<HashMap<String, (i64, u64, i64)>>> = Mutex::new(None);
+const REFUSAL_WINDOW: i64 = 600;
+
+/// At most one dashboard alert (and one message) per user per 10 minutes;
+/// later refusals in the window update its count.
+fn refused_alert(app: &App, user: &str, t: i64) {
+    let mut m = REFUSALS.lock().unwrap_or_else(|e| e.into_inner());
+    let e = m.get_or_insert_with(HashMap::new).entry(user.to_string()).or_insert((0, 0, 0));
+    if t - e.0 >= REFUSAL_WINDOW {
+        *e = (t, 0, 0);
+    }
+    e.1 += 1;
+    let text = format!("{} refused call{} from {user}. Each one is in the Capture Log.", e.1, if e.1 == 1 { "" } else { "s" });
+    e.2 = app.log.refused_summary((e.2 > 0).then_some(e.2), &text);
+}
+
+/// Checks the permission map, then runs the route. Refusals go in the
+/// Capture Log so the owner can see who tried what.
+fn guarded(app: &Arc<App>, req: &Req, who: crate::auth::Who, token: &str) -> Resp {
+    let allowed = match need(req) {
+        Need::Anyone => true,
+        Need::Admin => who.admin,
+        Need::All(ps) => ps.iter().all(|p| who.can(p)),
+    };
+    if !allowed {
+        app.log.refused(&format!("{} was refused: {} {} from {}{}.", who.name, req.method, req.path, req.ip, if who.via_key { " with an API key" } else { "" }));
+        refused_alert(app, &who.name, now());
+        return resp(403, "application/json", json!({"error": "This user isn't allowed to do that."}).to_string());
+    }
+    let user = who.name.clone();
+    // Changes made by this request belong to this user (see App::confirm_pending_as).
+    crate::app::set_actor(&user);
+    let p = req.path.as_str();
     match (req.method.as_str(), p) {
+        ("GET", "/api/me") => ok(json!({"name": who.name, "admin": who.admin, "perms": who.perms})),
+        // Sessions reach this before the permission check; keys come here.
+        ("POST", "/api/confirm") => ok(json!({ "kept": app.confirm_pending_as(&req.ip, &who.name, who.admin) })),
+        ("GET", "/api/reference") => ok(json!({
+            "auth": "Send the key in the Authorization header: Bearer fgk_...",
+            "perms": crate::auth::PERMS.iter().map(|(id, group, label)| json!({"id": id, "group": group, "label": label})).collect::<Vec<_>>(),
+            "routes": ROUTES.iter().map(|(m, p, n, w)| json!({"method": m, "path": p, "needs": n, "what": w})).collect::<Vec<_>>(),
+        })),
+        ("GET", "/api/users") => ok(users_view(app, &user)),
+        ("GET", "/api/notify") => ok(crate::notify::view()),
+        ("POST", "/api/notify") => match crate::notify::change(&body(req)) {
+            Ok((v, line)) => {
+                app.log.note("setting", &format!("{user} {line}."));
+                ok(v)
+            }
+            Err(e) => bad(e),
+        },
+        ("POST", "/api/users") => users_change(app, req, &user),
         ("GET", "/api/certs") => ok(certs(app)),
         ("POST", "/api/certs") => {
             if s(&body(req), "action") != "new" {
@@ -517,17 +697,33 @@ fn route(app: &Arc<App>, req: &Req) -> Resp {
             let b = body(req);
             match b["id"].as_i64() {
                 Some(id) => {
+                    if !app.log.are_alerts(&[id]) {
+                        return bad("Only alerts can be cleared.");
+                    }
                     app.log.handle_id(id);
                     ok(json!({ "ok": true }))
                 }
                 None => bad("Which alert?"),
             }
         }
+        ("POST", "/api/alerts/clear") => {
+            let b = body(req);
+            let ids: Vec<i64> = b["ids"].as_array().map(|a| a.iter().filter_map(Value::as_i64).collect()).unwrap_or_default();
+            if ids.is_empty() || ids.len() > 500 {
+                return bad("Which alerts?");
+            }
+            if !app.log.are_alerts(&ids) {
+                return bad("Only alerts can be cleared.");
+            }
+            let n = app.log.handle_ids(&ids);
+            app.log.note("setting", &format!("{user} cleared {n} alert{} from the dashboard.", if n == 1 { "" } else { "s" }));
+            ok(json!({ "ok": true, "cleared": n }))
+        }
         ("GET", "/api/firewall") => ok(firewall(app, &user, req.query.contains_key("rules"))),
         ("POST", "/api/firewall") => firewall_change(app, req),
         ("GET", "/api/coach") => ok(coach_get(app, &user)),
         ("POST", "/api/coach") => coach_post(app, req),
-        ("POST", "/api/list") => list_change(app, req),
+        ("POST", "/api/list") => list_change(app, req, &who),
         ("GET", "/api/ports") => ok(ports(app, &user, req)),
         ("POST", "/api/ports") => ports_change(app, req, &user),
         ("GET", "/api/log") => {
@@ -1027,8 +1223,11 @@ fn status(app: &App, user: &str) -> Value {
         let l = app.live.lock().unwrap();
         (l.wan_bps, l.lan_bps)
     };
+    let who = app.auth.who(user);
     json!({
         "user": user,
+        "admin": who.as_ref().is_some_and(|w| w.admin),
+        "perms": who.map(|w| w.perms).unwrap_or_default(),
         "version": env!("CARGO_PKG_VERSION"),
         "os": std::env::consts::OS,
         "arch": std::env::consts::ARCH,
@@ -1212,7 +1411,7 @@ fn observed_map(app:&App,blocked:bool)->Value {
 /// Only what still needs the owner: not handled, and not about a device
 /// already trusted, LAN-only or blocked. Newest first.
 fn true_alerts(rows: Vec<crate::caplog::Row>, settled: &std::collections::HashSet<String>) -> Vec<Value> {
-    let mut out: Vec<_> = rows.into_iter().filter(|r| !r.handled && (r.outcome!="unknown"||!settled.contains(&r.device)) && r.reason != "surge" && r.outcome!="dropped" && !(r.kind == "device" && r.reason == "port_observed")).collect();
+    let mut out: Vec<_> = rows.into_iter().filter(|r| !r.handled && (r.outcome!="unknown"||!settled.contains(&r.device)) && r.reason != "surge" && r.reason != "refused" && r.outcome!="dropped" && !(r.kind == "device" && r.reason == "port_observed")).collect();
     out.sort_by_key(|r| std::cmp::Reverse(r.last));
     out.truncate(100);
     out.into_iter()
@@ -1245,7 +1444,7 @@ fn alert_link(r: &crate::caplog::Row) -> String {
 }
 
 fn speed_test_change(app:&Arc<App>,req:&Req,user:&str)->Resp {
-    if !app.auth.names().iter().any(|(n,r)|n==user&&r=="admin") {return resp(403,"application/json",json!({"error":"Only an admin can run or cancel a speed test."}).to_string());}
+    if !app.auth.who(user).is_some_and(|w|w.can("speed_run")) {return resp(403,"application/json",json!({"error":"This user isn't allowed to run or cancel a speed test."}).to_string());}
     match s(&body(req),"action").as_str() {
         "run"=>match app.speed_test.start(){Ok(())=>ok(json!(app.speed_test.snapshot())),Err(e)=>resp(409,"application/json",json!({"error":e}).to_string())},
         "cancel"=>{app.speed_test.cancel();ok(json!(app.speed_test.snapshot()))},
@@ -1271,8 +1470,8 @@ fn updates_status(app: &Arc<App>) -> Resp {
 }
 
 fn updates_check(app: &Arc<App>, user: &str) -> Resp {
-    if !app.auth.names().iter().any(|(n, r)| n == user && r == "admin") {
-        return resp(403, "application/json", json!({"error": "Only an admin can check for updates."}).to_string());
+    if !app.auth.who(user).is_some_and(|w| w.can("updates_check")) {
+        return resp(403, "application/json", json!({"error": "This user isn't allowed to check for updates."}).to_string());
     }
     match crate::updater::check_now(&app.dir) {
         Ok(s) => {
@@ -2227,7 +2426,7 @@ fn coach_post(app: &Arc<App>, req: &Req) -> Resp {
     }))
 }
 
-fn list_change(app: &App, req: &Req) -> Resp {
+fn list_change(app: &App, req: &Req, who: &crate::auth::Who) -> Resp {
     let b = body(req);
     let which = s(&b, "list");
     if which != "white" && which != "black" {
@@ -2268,6 +2467,11 @@ fn list_change(app: &App, req: &Req) -> Resp {
         if added.is_empty() {
             return bad("Already on the list.");
         }
+        // Adding here would take entries off the other list, which needs that list's permission too.
+        let other_perm = if which == "white" { "block_list" } else { "allow_list" };
+        if !moved.is_empty() && !who.can(other_perm) {
+            return resp(403, "application/json", json!({"error": format!("{} is on the {other_name}, and this user can't change that list.", moved.join(", "))}).to_string());
+        }
         let off = if moved.is_empty() { String::new() } else { format!(", took {} off the {other_name}", moved.join(", ")) };
         format!("added {} to the {}{off}", added.join(", "), if which == "white" { "White list" } else { "Black list" })
     } else if b["remove"].is_string() {
@@ -2305,6 +2509,80 @@ fn timezones() -> Vec<String> {
     out
 }
 
+/// The Users page: users, who is signed in, and the permission list.
+/// No password hash or key ever leaves the gateway.
+fn users_view(app: &App, user: &str) -> Value {
+    let perms: Vec<Value> = crate::auth::PERMS.iter().map(|(id, group, label)| json!({"id": id, "group": group, "label": label})).collect();
+    json!({
+        "me": user,
+        "users": app.auth.list(),
+        "sessions": app.auth.sessions().into_iter().map(|(i, u, ip, t)| json!({"id": i, "user": u, "ip": ip, "started": t})).collect::<Vec<_>>(),
+        "perms": perms,
+        "implies": crate::auth::IMPLIES,
+    })
+}
+
+fn users_change(app: &Arc<App>, req: &Req, user: &str) -> Resp {
+    let b = body(req);
+    let name = s(&b, "name");
+    let done = |line: String| {
+        app.log.note("setting", &format!("{user} {line}."));
+        ok(users_view(app, user))
+    };
+    match s(&b, "action").as_str() {
+        "save" => {
+            let e = crate::auth::Edit {
+                old_name: s(&b, "old_name"),
+                name: name.trim().to_string(),
+                role: s(&b, "role"),
+                perms: b["perms"].as_array().map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect()).unwrap_or_default(),
+                web: b["web"].as_bool().unwrap_or(false),
+                api: b["api"].as_bool().unwrap_or(false),
+                password: b["password"].as_str().unwrap_or("").to_string(),
+            };
+            match app.auth.edit(&e) {
+                Ok(line) => done(line),
+                Err(e) => bad(e),
+            }
+        }
+        "remove" => {
+            if name == user {
+                return bad("You can't remove the user you're signed in as.");
+            }
+            match app.auth.remove(&name) {
+                Ok(_) => done(format!("removed user {name}")),
+                Err(e) => bad(e),
+            }
+        }
+        "new_key" => match app.auth.new_key(&name) {
+            Ok(key) => {
+                app.log.note("setting", &format!("{user} made a new API key for {name}."));
+                let mut v = users_view(app, user);
+                v["key"] = json!(key);
+                ok(v)
+            }
+            Err(e) => bad(e),
+        },
+        "revoke_key" => match app.auth.revoke_key(&name) {
+            Ok(_) => done(format!("revoked the API key for {name}")),
+            Err(e) => bad(e),
+        },
+        "password" => match app.auth.set_password(user, b["password"].as_str().unwrap_or("")) {
+            Ok(_) => done("changed their password".into()),
+            Err(e) => bad(e),
+        },
+        "end_session" => {
+            let id = s(&b, "id");
+            if id.len() < 8 {
+                return bad("Unknown session.");
+            }
+            app.auth.end_prefix(&id);
+            done("signed out a session".into())
+        }
+        _ => bad("Unknown action."),
+    }
+}
+
 fn settings(app: &App, user: &str) -> Value {
     let cfg = app.cfg.read().unwrap().clone();
     json!({
@@ -2318,8 +2596,6 @@ fn settings(app: &App, user: &str) -> Value {
         "log_count": app.log.page("", "", 0, i64::MAX, "old", 0, 1).1,
         "log_oldest": app.log.page("", "", 0, i64::MAX, "old", 0, 1).0.first().map(|r| r.last),
         "ports": net::ports(),
-        "users": app.auth.names().into_iter().map(|(n, r)| json!({"name": n, "role": r})).collect::<Vec<_>>(),
-        "sessions": app.auth.sessions().into_iter().map(|(i, u, ip, t)| json!({"id": i, "user": u, "ip": ip, "started": t})).collect::<Vec<_>>(),
         "geo": geo_state(app),
         "timezone": app.policy.read().unwrap().timezone,
         "hour12": app.policy.read().unwrap().hour12,
@@ -2469,34 +2745,6 @@ fn settings_change(app: &Arc<App>, req: &Req, user: &str) -> Resp {
                 Err(e) => bad(e),
             }
         }
-        "add_user" => match app.auth.add(&s(&b, "name"), b["password"].as_str().unwrap_or("")) {
-            Ok(_) => {
-                app.log.note("setting", &format!("{user} added admin {}.", s(&b, "name")));
-                ok(json!({"pending": false}))
-            }
-            Err(e) => bad(e),
-        },
-        "remove_user" => match app.auth.remove(&s(&b, "name")) {
-            Ok(_) => {
-                app.log.note("setting", &format!("{user} removed admin {}.", s(&b, "name")));
-                ok(json!({"pending": false}))
-            }
-            Err(e) => bad(e),
-        },
-        "password" => {
-            let name = if s(&b, "name").is_empty() { user.to_string() } else { s(&b, "name") };
-            match app.auth.set_password(&name, b["password"].as_str().unwrap_or("")) {
-                Ok(_) => {
-                    app.log.note("setting", &format!("{user} changed the password for {name}."));
-                    ok(json!({"pending": false}))
-                }
-                Err(e) => bad(e),
-            }
-        }
-        "end_session" => {
-            app.auth.end_prefix(&s(&b, "id"));
-            ok(json!({"pending": false}))
-        }
         "rerun_setup" => {
             if s(&b, "confirm").trim() != "YES" {
                 return bad("Type YES to run setup again.");
@@ -2556,12 +2804,12 @@ fn block_info(app: &App, ix: &crate::about::Index, f: &BlockFacts) -> Value {
 
 /// Log rows with the plain line added to blocks and audit lines.
 fn log_rows(app: &App, rows: Vec<crate::caplog::Row>) -> Vec<Value> {
-    let pol = app.policy.read().unwrap();
-    let labels: HashMap<&str, String> = pol.devices.iter().map(|(m, d)| (m.as_str(), App::device_label(d, m))).collect();
+    // Labels are copied out so the policy lock isn't held below: block_info
+    // reads the policy again, and a second read waits behind a queued writer.
+    let labels: HashMap<String, String> = app.policy.read().unwrap().devices.iter().map(|(m, d)| (m.clone(), App::device_label(d, m))).collect();
     let need = rows.iter().any(|r| !r.remote.is_empty());
     let ix = if need { Some(app.list_index()) } else { None };
-    let out = rows
-        .into_iter()
+    rows.into_iter()
         .map(|r| {
             let mut v = json!(r);
             if let (Some(ix), false) = (&ix, r.remote.is_empty()) {
@@ -2572,9 +2820,7 @@ fn log_rows(app: &App, rows: Vec<crate::caplog::Row>) -> Vec<Value> {
             }
             v
         })
-        .collect();
-    drop(pol);
-    out
+        .collect()
 }
 
 /// What the owner can do about one block: a button (`allow`, with the
@@ -3271,5 +3517,362 @@ mod real_api_tests {
         }
         let tls=cert(&a.dir).unwrap();let listener=TcpListener::bind("127.0.0.1:18843").unwrap();println!("LOCAL_API_READY {}",a.dir);
         for tcp in listener.incoming().flatten(){let(a,tls)=(a.clone(),tls.clone());std::thread::spawn(move||{let _=handle(&a,tls,tcp);});}
+    }
+}
+
+#[cfg(test)]
+mod permission_tests {
+    use super::*;
+
+    fn app() -> Arc<App> {
+        static SETUP: Mutex<()> = Mutex::new(());
+        let _g = SETUP.lock().unwrap();
+        let dir = std::env::temp_dir().join(format!("foilgw-perm-test-{}", crate::auth::token()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let conf = dir.join("gateway.conf");
+        std::fs::write(&conf, "lan=eth1\nwan=eth0\nsafety_hosts=192.168.1.2\nadmin_port=18843\n").unwrap();
+        std::fs::write(dir.join("policy.json"), "{\"mode\":\"normal\"}").unwrap();
+        let old = std::env::var_os("FOILGW_STATE");
+        std::env::set_var("FOILGW_STATE", &dir);
+        let mut a = App::open(conf.to_str().unwrap());
+        if let Some(v) = old { std::env::set_var("FOILGW_STATE", v) } else { std::env::remove_var("FOILGW_STATE") }
+        a.auth.add("boss", "boss-password-123").unwrap();
+        a.speed_test = Arc::new(crate::speedtest::SpeedTest::local_fixture("http://127.0.0.1:9".into()));
+        Arc::new(a)
+    }
+
+    fn rq(method: &str, path: &str, body: Value) -> Req {
+        Req { method: method.into(), path: path.into(), query: Default::default(), headers: HashMap::new(), body: body.to_string().into_bytes(), ip: "10.0.0.9".into(), local: "127.0.0.1".into(), local_port: 18843 }
+    }
+    fn with_key(mut r: Req, key: &str) -> Req {
+        r.headers.insert("authorization".into(), format!("Bearer {key}"));
+        r
+    }
+    fn with_cookie(mut r: Req, t: &str) -> Req {
+        r.headers.insert("cookie".into(), format!("fg_session={t}"));
+        r.headers.insert("x-fg".into(), "1".into());
+        r
+    }
+    fn custom(a: &App, name: &str, perms: &[&str], web: bool, api: bool) {
+        let e = crate::auth::Edit { old_name: String::new(), name: name.into(), role: "custom".into(), perms: perms.iter().map(|p| p.to_string()).collect(), web, api, password: if web { "custom-password-1".into() } else { String::new() } };
+        a.auth.edit(&e).unwrap();
+    }
+    fn body_for(m: &str, p: &str) -> Value {
+        match (m, p) {
+            ("POST", "/api/audit") => json!({"action": "keep"}),
+            ("POST", "/api/ports") => json!({"action": "seen"}),
+            ("POST", "/api/list") => json!({"list": "black"}),
+            ("POST", "/api/device") => json!({"mac": "aa", "policy": "normal"}),
+            _ => json!({}),
+        }
+    }
+
+    #[test]
+    fn reference_list_matches_the_permission_check() {
+        for (m, p, n, _) in ROUTES {
+            let got = need(&rq(m, p, body_for(m, p)));
+            let want = if *n == "any" { Need::Anyone } else { Need::All(vec![n]) };
+            assert_eq!(got, want, "{m} {p}");
+            assert!(*n == "any" || crate::auth::PERMS.iter().any(|(id, ..)| id == n), "{n}");
+        }
+        // Every permission is used by at least one route.
+        for (id, ..) in crate::auth::PERMS {
+            assert!(ROUTES.iter().any(|r| r.2 == *id), "{id} unused");
+        }
+    }
+
+    #[test]
+    fn body_decides_what_mixed_routes_need() {
+        let n = |p: &str, b: Value| need(&rq("POST", p, b));
+        assert_eq!(n("/api/device", json!({"forget": true})), Need::Admin);
+        assert_eq!(n("/api/device", json!({"name": "x"})), Need::All(vec!["device_actions"]));
+        assert_eq!(n("/api/device", json!({"telemetry": true})), Need::All(vec!["device_actions"]));
+        assert_eq!(n("/api/device", json!({"allow": []})), Need::All(vec!["allow_list"]));
+        assert_eq!(n("/api/device", json!({"deny": []})), Need::All(vec!["block_list"]));
+        assert_eq!(n("/api/device", json!({"policy": "blocked", "deny": []})), Need::All(vec!["device_actions", "block_list"]));
+        assert_eq!(n("/api/list", json!({"list": "white"})), Need::All(vec!["allow_list"]));
+        assert_eq!(n("/api/list", json!({"list": "other"})), Need::Admin);
+        assert_eq!(n("/api/audit", json!({"action": "on"})), Need::Admin);
+        assert_eq!(n("/api/ports", json!({"action": "add"})), Need::Admin);
+        for p in ["/api/settings", "/api/users", "/api/notify", "/api/restart", "/api/firewall", "/api/profile", "/api/coach", "/api/restore", "/api/updates/install", "/api/updates/rollback", "/api/rollback-version", "/api/made-up"] {
+            assert_eq!(n(p, json!({})), Need::Admin, "{p}");
+        }
+        for p in ["/api/settings", "/api/users", "/api/notify", "/api/certs", "/api/backup", "/api/coach", "/api/made-up"] {
+            assert_eq!(need(&rq("GET", p, json!({}))), Need::Admin, "{p}");
+        }
+    }
+
+    #[test]
+    fn each_permission_allows_only_its_own_routes_with_a_key() {
+        let a = app();
+        for (perm, ..) in crate::auth::PERMS {
+            let name = format!("u{}", perm.replace('_', ""));
+            custom(&a, &name, &[perm], false, true);
+            let key = a.auth.new_key(&name).unwrap();
+            for (m, p, n, _) in ROUTES {
+                let r = route(&a, &with_key(rq(m, p, body_for(m, p)), &key));
+                // A permission brings the view it is used from (auth::IMPLIES).
+                if crate::auth::with_implied(&[perm.to_string()]).iter().any(|x| x == n) || *n == "any" {
+                    // Allowed GETs run. Allowed POSTs aren't run here, so
+                    // nothing real changes; need() is checked above.
+                    if *m == "GET" {
+                        assert_ne!(r.status, 403, "{perm} refused {m} {p}");
+                        assert_ne!(r.status, 401, "{perm} {m} {p}");
+                    }
+                } else {
+                    assert_eq!(r.status, 403, "{perm} was let into {m} {p}");
+                }
+            }
+            for p in ["/api/settings", "/api/users", "/api/notify"] {
+                assert_eq!(route(&a, &with_key(rq("GET", p, json!({})), &key)).status, 403);
+                assert_eq!(route(&a, &with_key(rq("POST", p, json!({"action": "save"})), &key)).status, 403);
+            }
+        }
+        // Refusals are in the Capture Log.
+        assert!(a.log.rows("alert", "was refused", 0, 5).iter().any(|r| r.text.contains("with an API key")));
+        std::fs::remove_dir_all(&a.dir).unwrap();
+    }
+
+    #[test]
+    fn allowed_actions_run_and_clear_alerts() {
+        let a = app();
+        custom(&a, "helper", &["handle_alerts"], false, true);
+        let key = a.auth.new_key("helper").unwrap();
+        a.log.add("alert", "cam", "one", 1, 0);
+        a.log.add("alert", "cam", "two", 2, 0);
+        let ids: Vec<i64> = a.log.rows("alert", "", 0, 10).iter().map(|r| r.id).collect();
+        let r = route(&a, &with_key(rq("POST", "/api/alerts/clear", json!({"ids": ids})), &key));
+        assert_eq!(r.status, 200);
+        assert!(a.log.rows("alert", "", 0, 10).iter().all(|r| r.handled), "cleared alerts stay in the log, marked handled");
+        assert_eq!(route(&a, &with_key(rq("POST", "/api/alerts/clear", json!({"ids": []})), &key)).status, 400);
+        // Only alert and device lines can be cleared; other lines are refused and left alone.
+        a.log.note("setting", "boss changed something");
+        a.log.add("alert", "cam", "three", 3, 0);
+        let set = a.log.rows("setting", "", 0, 10)[0].id;
+        let three = a.log.rows("alert", "three", 0, 10)[0].id;
+        assert_eq!(route(&a, &with_key(rq("POST", "/api/alerts/clear", json!({"ids": [set]})), &key)).status, 400);
+        assert_eq!(route(&a, &with_key(rq("POST", "/api/alerts/clear", json!({"ids": [three, set]})), &key)).status, 400);
+        assert_eq!(route(&a, &with_key(rq("POST", "/api/alert", json!({"id": set})), &key)).status, 400);
+        assert!(!a.log.rows("setting", "", 0, 10)[0].handled && !a.log.rows("alert", "three", 0, 10)[0].handled, "nothing cleared");
+        assert_eq!(route(&a, &with_key(rq("POST", "/api/alerts/clear", json!({"ids": [three]})), &key)).status, 200);
+        std::fs::remove_dir_all(&a.dir).unwrap();
+    }
+
+    #[test]
+    fn web_only_api_only_and_both() {
+        let a = app();
+        custom(&a, "webonly", &["status"], true, false);
+        custom(&a, "apionly", &["status"], false, true);
+        custom(&a, "both", &["status"], true, true);
+        // Web only: signs in, but a key doesn't work.
+        let t = a.auth.login("webonly", "custom-password-1", "10.0.0.1").unwrap();
+        assert_eq!(route(&a, &with_cookie(rq("GET", "/api/dashboard", json!({})), &t)).status, 200);
+        let k = a.auth.new_key("webonly").unwrap();
+        assert_eq!(route(&a, &with_key(rq("GET", "/api/dashboard", json!({})), &k)).status, 401);
+        // API only: no web sign-in at all.
+        assert!(a.auth.login("apionly", "custom-password-1", "10.0.0.2").is_err());
+        let k = a.auth.new_key("apionly").unwrap();
+        assert_eq!(route(&a, &with_key(rq("GET", "/api/dashboard", json!({})), &k)).status, 200);
+        // Both.
+        let t = a.auth.login("both", "custom-password-1", "10.0.0.3").unwrap();
+        assert_eq!(route(&a, &with_cookie(rq("GET", "/api/dashboard", json!({})), &t)).status, 200);
+        let k = a.auth.new_key("both").unwrap();
+        assert_eq!(route(&a, &with_key(rq("GET", "/api/dashboard", json!({})), &k)).status, 200);
+        // A web user is refused admin pages and actions too.
+        assert_eq!(route(&a, &with_cookie(rq("GET", "/api/users", json!({})), &t)).status, 403);
+        assert_eq!(route(&a, &with_cookie(rq("POST", "/api/restart", json!({})), &t)).status, 403);
+        // Turning web off ends that user's sessions at once.
+        let e = crate::auth::Edit { old_name: "both".into(), name: "both".into(), role: "custom".into(), perms: vec!["status".into()], web: false, api: true, password: String::new() };
+        a.auth.edit(&e).unwrap();
+        assert_eq!(route(&a, &with_cookie(rq("GET", "/api/dashboard", json!({})), &t)).status, 401);
+        // Taking a permission away works on the next request.
+        let e = crate::auth::Edit { perms: vec![], ..e };
+        a.auth.edit(&e).unwrap();
+        assert_eq!(route(&a, &with_key(rq("GET", "/api/dashboard", json!({})), &k)).status, 403);
+        std::fs::remove_dir_all(&a.dir).unwrap();
+    }
+
+    #[test]
+    fn revoked_wrong_and_removed_keys_fail_and_lock_out() {
+        let a = app();
+        custom(&a, "bot", &["status"], false, true);
+        let k = a.auth.new_key("bot").unwrap();
+        assert!(k.starts_with("fgk_") && k.len() == 68);
+        assert!(!std::fs::read_to_string(a.dir.clone() + "/users.json").unwrap().contains(&k[4..]), "the key itself is never stored");
+        // Replacing a key stops the old one.
+        let k2 = a.auth.new_key("bot").unwrap();
+        assert_eq!(route(&a, &with_key(rq("GET", "/api/me", json!({})), &k)).status, 401);
+        assert_eq!(route(&a, &with_key(rq("GET", "/api/me", json!({})), &k2)).status, 200);
+        a.auth.revoke_key("bot").unwrap();
+        assert_eq!(route(&a, &with_key(rq("GET", "/api/me", json!({})), &k2)).status, 401);
+        let k3 = a.auth.new_key("bot").unwrap();
+        a.auth.remove("bot").unwrap();
+        assert_eq!(route(&a, &with_key(rq("GET", "/api/me", json!({})), &k3)).status, 401);
+        // Keys only open the API, never a page or sign-in.
+        assert_eq!(route(&a, &with_key(rq("GET", "/", json!({})), &k3)).status, 404);
+        // Wrong keys share the sign-in lockout.
+        let r = || {
+            let mut r = rq("GET", "/api/me", json!({}));
+            r.ip = "10.9.9.9".into();
+            with_key(r, "fgk_wrong")
+        };
+        for _ in 0..5 {
+            assert_eq!(route(&a, &r()).status, 401);
+        }
+        assert_eq!(route(&a, &r()).status, 429);
+        assert!(a.auth.login("boss", "boss-password-123", "10.9.9.9").is_err(), "the same address can't sign in either");
+        std::fs::remove_dir_all(&a.dir).unwrap();
+    }
+
+    #[test]
+    fn a_key_can_keep_its_own_change() {
+        // Changing a list needs nft (root), so the bench checks a real change;
+        // here: a key reaches the confirm, which used to be 404 for keys.
+        let a = app();
+        custom(&a, "jarvis", &["block_list"], false, true);
+        let key = a.auth.new_key("jarvis").unwrap();
+        let r = route(&a, &with_key(rq("POST", "/api/confirm", json!({})), &key));
+        assert_eq!(r.status, 200);
+        assert_eq!(serde_json::from_slice::<Value>(&r.body).unwrap()["kept"], false, "nothing was waiting");
+        std::fs::remove_dir_all(&a.dir).unwrap();
+    }
+
+    #[test]
+    fn one_list_permission_cant_change_the_other_list() {
+        let a = app();
+        a.policy.write().unwrap().white.push("203.0.113.9".into());
+        custom(&a, "blocker", &["block_list"], true, false);
+        custom(&a, "allower", &["allow_list"], true, false);
+        custom(&a, "both", &["block_list", "allow_list"], true, false);
+        let b = a.auth.login("blocker", "custom-password-1", "10.0.0.2").unwrap();
+        let w = a.auth.login("allower", "custom-password-1", "10.0.0.3").unwrap();
+        let both = a.auth.login("both", "custom-password-1", "10.0.0.4").unwrap();
+        // Black-listing a White list entry would take it off the White list.
+        let r = route(&a, &with_cookie(rq("POST", "/api/list", json!({"list": "black", "add": "203.0.113.9"})), &b));
+        assert_eq!(r.status, 403);
+        assert!(a.policy.read().unwrap().white.contains(&"203.0.113.9".to_string()), "White list untouched");
+        assert!(!a.policy.read().unwrap().black.contains(&"203.0.113.9".to_string()));
+        // A new entry is fine with block_list alone.
+        assert_ne!(route(&a, &with_cookie(rq("POST", "/api/list", json!({"list": "black", "add": "198.51.100.7"})), &b)).status, 403);
+        // With both permissions the move is allowed.
+        assert_ne!(route(&a, &with_cookie(rq("POST", "/api/list", json!({"list": "black", "add": "203.0.113.9"})), &both)).status, 403);
+        // Allowing a device deny-list entry changes a block list: allow_list alone is refused.
+        let dd = json!({"mac": "aa:bb:cc:dd:ee:ff", "reason": "devdeny", "remote": "192.0.2.1"});
+        assert_eq!(route(&a, &with_cookie(rq("POST", "/api/allow", dd.clone()), &w)).status, 403);
+        assert_ne!(route(&a, &with_cookie(rq("POST", "/api/allow", dd), &both)).status, 403);
+        assert_ne!(route(&a, &with_cookie(rq("POST", "/api/allow", json!({"mac": "aa:bb:cc:dd:ee:ff", "reason": "black", "remote": "192.0.2.1"})), &w)).status, 403);
+        std::fs::remove_dir_all(&a.dir).unwrap();
+    }
+
+    #[test]
+    fn only_the_owner_or_an_admin_keeps_a_change() {
+        let a = app();
+        custom(&a, "jarvis", &["block_list"], true, true);
+        custom(&a, "kid", &["status"], true, true);
+        let kid = a.auth.login("kid", "custom-password-1", "10.0.0.2").unwrap();
+        let kid_key = a.auth.new_key("kid").unwrap();
+        a.test_pending("jarvis");
+        for r in [route(&a, &with_cookie(rq("POST", "/api/confirm", json!({})), &kid)), route(&a, &with_key(rq("POST", "/api/confirm", json!({})), &kid_key))] {
+            assert_eq!(r.status, 200);
+            assert_eq!(serde_json::from_slice::<Value>(&r.body).unwrap()["kept"], false, "someone else's change");
+        }
+        assert!(a.pending.lock().unwrap().is_some(), "still waiting");
+        let p = a.pending.lock().unwrap().take().unwrap();
+        assert!(p.may_keep("jarvis", false) && p.may_keep("boss", true) && !p.may_keep("kid", false));
+        // A change the gateway made itself (no user) is for admins only.
+        a.test_pending("");
+        let p = a.pending.lock().unwrap().take().unwrap();
+        assert!(!p.may_keep("", false) && p.may_keep("boss", true));
+        std::fs::remove_dir_all(&a.dir).unwrap();
+    }
+
+    #[test]
+    fn refused_calls_make_one_summary_alert_per_user_per_window() {
+        let a = app();
+        custom(&a, "refusenik", &["status"], false, true);
+        let key = a.auth.new_key("refusenik").unwrap();
+        for p in ["/api/settings", "/api/users", "/api/notify"] {
+            assert_eq!(route(&a, &with_key(rq("GET", p, json!({})), &key)).status, 403);
+        }
+        // Every refusal is in the Capture Log (and under the Alerts filter)...
+        assert_eq!(a.log.rows("", "refusenik was refused", 0, 10).len(), 3);
+        assert_eq!(a.log.rows("alert", "refusenik was refused", 0, 10).len(), 3);
+        // ...but the dashboard and Needs a Look get one line with the count.
+        let dash: Vec<String> = true_alerts(a.log.rows("alert", "", 0, 100), &Default::default()).iter().map(|v| v["text"].as_str().unwrap_or("").to_string()).collect();
+        assert_eq!(dash, vec!["3 refused calls from refusenik. Each one is in the Capture Log.".to_string()]);
+        assert_eq!(a.log.rows("look", "refused", 0, 10).len(), 1);
+        // Cleared or not, the next one in the window updates that line rather than making another.
+        let id = a.log.rows("look", "refused", 0, 10)[0].id;
+        a.log.handle_ids(&[id]);
+        refused_alert(&a, "refusenik", now());
+        assert_eq!(a.log.rows("look", "refused", 0, 10).len(), 0);
+        // After 10 minutes a new alert starts again at 1.
+        refused_alert(&a, "refusenik", now() + REFUSAL_WINDOW);
+        assert_eq!(a.log.rows("look", "refused", 0, 10)[0].text, "1 refused call from refusenik. Each one is in the Capture Log.");
+        std::fs::remove_dir_all(&a.dir).unwrap();
+    }
+
+    #[test]
+    fn only_admins_reach_setup_when_it_runs_again() {
+        let a = app();
+        custom(&a, "kid", &["status"], true, false);
+        let boss = a.auth.login("boss", "boss-password-123", "10.0.0.1").unwrap();
+        let kid = a.auth.login("kid", "custom-password-1", "10.0.0.2").unwrap();
+        assert_eq!(route(&a, &with_cookie(rq("POST", "/api/settings", json!({"action": "rerun_setup", "confirm": "YES"})), &boss)).status, 200);
+        assert!(a.setup_mode());
+        for (m, p) in [("GET", "/api/setup/info"), ("POST", "/api/setup/state"), ("POST", "/api/setup"), ("GET", "/setup")] {
+            assert_eq!(route(&a, &with_cookie(rq(m, p, json!({"admin_port": 9443})), &kid)).status, 403, "{m} {p}");
+        }
+        assert_eq!(route(&a, &with_cookie(rq("GET", "/api/setup/info", json!({})), &boss)).status, 200);
+        std::fs::remove_dir_all(&a.dir).unwrap();
+    }
+
+    #[test]
+    fn the_last_admin_is_kept_and_self_removal_refused() {
+        let a = app();
+        assert!(a.auth.remove("boss").is_err());
+        let e = crate::auth::Edit { old_name: "boss".into(), name: "boss".into(), role: "custom".into(), perms: vec![], web: true, api: false, password: String::new() };
+        assert!(a.auth.edit(&e).is_err());
+        let e = crate::auth::Edit { role: "admin".into(), web: false, ..e };
+        assert!(a.auth.edit(&e).is_err(), "an admin who can't sign in doesn't count");
+        let t = a.auth.login("boss", "boss-password-123", "10.0.0.1").unwrap();
+        let r = route(&a, &with_cookie(rq("POST", "/api/users", json!({"action": "remove", "name": "boss"})), &t));
+        assert_eq!(r.status, 400);
+        // The Users page never shows a hash or key.
+        let v = route(&a, &with_cookie(rq("GET", "/api/users", json!({})), &t));
+        let text = String::from_utf8_lossy(&v.body).to_string();
+        assert!(v.status == 200 && !text.contains("argon2") && !text.contains("key_hash"));
+        std::fs::remove_dir_all(&a.dir).unwrap();
+    }
+
+    #[test]
+    fn upgrade_from_1_1_2_keeps_admins_and_rollback_keeps_custom_users_out() {
+        let dir = std::env::temp_dir().join(format!("foilgw-upg-{}", crate::auth::token()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("users.json");
+        let h = crate::auth::hash("old-admin-password").unwrap();
+        std::fs::write(&path, serde_json::to_string(&json!([{"name": "tony", "hash": h, "role": "admin"}])).unwrap()).unwrap();
+        let a = crate::auth::Auth::load(path.to_str().unwrap());
+        assert!(a.login("tony", "old-admin-password", "1.1.1.1").is_ok(), "1.1.2 admins still sign in");
+        let w = a.who("tony").unwrap();
+        assert!(w.admin && w.can("updates_check"));
+        let e = crate::auth::Edit { old_name: String::new(), name: "kid".into(), role: "custom".into(), perms: vec!["status".into()], web: true, api: false, password: "kid-password-1".into() };
+        a.edit(&e).unwrap();
+        // What 1.1.2 would read: a "hash" only for web admins.
+        let disk: Vec<Value> = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        let kid = disk.iter().find(|u| u["name"] == "kid").unwrap();
+        assert_eq!(kid["hash"], "");
+        assert!(kid["pw"].as_str().unwrap().starts_with("$argon2"));
+        let tony = disk.iter().find(|u| u["name"] == "tony").unwrap();
+        assert!(tony["hash"].as_str().unwrap().starts_with("$argon2"));
+        // And 1.2.0 reading it back still signs the custom user in.
+        let b = crate::auth::Auth::load(path.to_str().unwrap());
+        assert!(b.login("kid", "kid-password-1", "1.1.1.2").is_ok());
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
+        }
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

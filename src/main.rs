@@ -3,6 +3,7 @@ mod about;
 mod anyport;
 mod app;
 mod names;
+mod notify;
 mod auth;
 mod maptraffic;
 mod detection;

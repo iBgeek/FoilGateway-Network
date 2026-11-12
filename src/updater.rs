@@ -485,6 +485,9 @@ fn check_once(dir: &str) -> Result<CheckState, CheckError> {
         Ok(s) => {
             save_state(dir, &s);
             *state().lock().unwrap() = s.clone();
+            if s.newer {
+                crate::notify::update_available(&s.latest);
+            }
             set_progress("Idle", if s.newer { format!("Version {} is available.", s.latest) } else { String::from("You are on the latest version.") }, "", false);
             Ok(s)
         }

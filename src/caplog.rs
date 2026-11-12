@@ -169,7 +169,11 @@ impl Log {
             let prefix=format!("{} on the router side tried {} {} on %",m.remote,m.proto,m.port);
             let _=db.execute("UPDATE events SET handled=1 WHERE kind='device' AND handled=0 AND device=?1 AND COALESCE(reason,'')='' AND text LIKE ?2 AND last<=?3",params![device,prefix,at]);
         }
-
+        drop(db);
+        // Stopped alerts and port sightings stay off the dashboard, so they don't go out as "needs a look".
+        if !(kind == "alert" && outcome == "dropped") && !(kind == "device" && m.reason == "port_observed") {
+            crate::notify::event(kind, device, text);
+        }
     }
 
     /// Would-be blocks nobody has dealt with yet, one line per device,
@@ -264,12 +268,38 @@ impl Log {
             tx.execute("INSERT OR IGNORE INTO pattern_flows(alert_id,flow,port,dir) VALUES(?1,?2,?3,?4)",params![id,signal.key(),signal.dport,dir]).map_err(|e|e.to_string())?;
         }
         tx.commit().map_err(|e|e.to_string())?;
+        drop(db);
+        crate::notify::event("alert", &a.mac, text);
         Ok(true)
     }
 
     /// Marks one alert (or any line) dealt with.
     pub fn handle_id(&self, id: i64) {
-        let _ = self.db().execute("UPDATE events SET handled = 1 WHERE id = ?1", params![id]);
+        let _ = self.db().execute("UPDATE events SET handled = 1 WHERE id = ?1 AND kind IN ('alert', 'device')", params![id]);
+    }
+
+    /// True when every id is a line the dashboard shows as an alert
+    /// (kind alert or device). Only those can be cleared.
+    pub fn are_alerts(&self, ids: &[i64]) -> bool {
+        let db = self.db();
+        let Ok(mut st) = db.prepare("SELECT 1 FROM events WHERE id = ?1 AND kind IN ('alert', 'device')") else { return false };
+        ids.iter().all(|id| st.exists(params![id]).unwrap_or(false))
+    }
+
+    /// Marks several lines handled at once. Returns how many changed.
+    pub fn handle_ids(&self, ids: &[i64]) -> usize {
+        let mut db = self.db();
+        let Ok(tx) = db.transaction() else { return 0 };
+        let mut n = 0;
+        if let Ok(mut st) = tx.prepare("UPDATE events SET handled = 1 WHERE id = ?1 AND handled = 0 AND kind IN ('alert', 'device')") {
+            for id in ids {
+                n += st.execute(params![id]).unwrap_or(0);
+            }
+        }
+        if tx.commit().is_err() {
+            return 0;
+        }
+        n
     }
 
     /// Marks a device's sudden-blocks alerts dealt with.
@@ -295,10 +325,50 @@ impl Log {
                 params![at, day, kind, device, text, key],
             );
         }
+        crate::notify::event(kind, device, text);
     }
 
     pub fn note(&self, kind: &str, text: &str) {
         self.add(kind, "", text, now(), 0);
+    }
+
+    /// A refused call: written down (an alert line with reason "refused"),
+    /// but kept off the dashboard and out of notifications. `refused_summary`
+    /// raises the alert people see.
+    pub fn refused(&self, text: &str) {
+        let at = now();
+        let day = (at / 86400).to_string();
+        let key = format!("alert||{text}");
+        let db = self.db();
+        let bumped = db.execute("UPDATE events SET count = count + 1, last = ?1 WHERE day = ?2 AND key = ?3", params![at, day, key]).unwrap_or(0);
+        if bumped == 0 {
+            let _ = db.execute(
+                "INSERT INTO events (first, last, day, kind, device, text, key, count, reason) VALUES (?1, ?1, ?2, 'alert', '', ?3, ?4, 1, 'refused')",
+                params![at, day, text, key],
+            );
+        }
+    }
+
+    /// The one dashboard alert for a user's refused calls. With `id`, that
+    /// line gets the new text (no new alert, no new message); without, a new
+    /// alert line is made and sent. Returns the line's id.
+    pub fn refused_summary(&self, id: Option<i64>, text: &str) -> i64 {
+        let at = now();
+        let db = self.db();
+        if let Some(id) = id {
+            if db.execute("UPDATE events SET text = ?1, last = ?2 WHERE id = ?3", params![text, at, id]).unwrap_or(0) == 1 {
+                return id;
+            }
+        }
+        let day = (at / 86400).to_string();
+        let _ = db.execute(
+            "INSERT INTO events (first, last, day, kind, device, text, key, count) VALUES (?1, ?1, ?2, 'alert', '', ?3, ?4, 1)",
+            params![at, day, text, format!("alert||refused|{at}|{text}")],
+        );
+        let id = db.last_insert_rowid();
+        drop(db);
+        crate::notify::event("alert", "", text);
+        id
     }
 
     /// Newest first. `kind` empty means all; `search` matches anywhere in the line.
@@ -318,8 +388,10 @@ impl Log {
             _ => "last DESC",
         };
         // "look" = unhandled alerts and new-device lines that still need an owner.
-        let actionable = "handled = 0 AND COALESCE(reason,'') != 'surge' AND COALESCE(outcome,'unknown') != 'dropped' AND NOT (kind = 'device' AND COALESCE(reason,'') = 'port_observed')";
-        let filter = format!("WHERE ((?1 = 'look' AND kind IN ('alert','device') AND {actionable}) OR (?1 = 'alert' AND kind = 'alert' AND {actionable}) OR (?1 NOT IN ('look','alert') AND (?1 = '' OR kind = ?1))) AND (?2 = '%%' OR text LIKE ?2 OR device LIKE ?2) AND last >= ?3 AND last <= ?4");
+        let actionable = "handled = 0 AND COALESCE(reason,'') NOT IN ('surge', 'refused') AND COALESCE(outcome,'unknown') != 'dropped' AND NOT (kind = 'device' AND COALESCE(reason,'') = 'port_observed')";
+        // The Alerts filter still lists refused calls; Needs a Look leaves them out.
+        let alert_rows = actionable.replace("NOT IN ('surge', 'refused')", "!= 'surge'");
+        let filter = format!("WHERE ((?1 = 'look' AND kind IN ('alert','device') AND {actionable}) OR (?1 = 'alert' AND kind = 'alert' AND {alert_rows}) OR (?1 NOT IN ('look','alert') AND (?1 = '' OR kind = ?1))) AND (?2 = '%%' OR text LIKE ?2 OR device LIKE ?2) AND last >= ?3 AND last <= ?4");
         let total: i64 = db.query_row(&format!("SELECT COUNT(*) FROM events {filter}"), params![kind, like, since, until], |r| r.get(0)).unwrap_or(0);
         let mut st = match db.prepare(&format!("SELECT id, first, last, kind, device, text, count, handled, COALESCE(reason, ''), COALESCE(remote, ''), COALESCE(dir, ''), CASE WHEN COALESCE(ports,'') != '' THEN ports WHEN port > 0 THEN proto || ' ' || port ELSE COALESCE(proto, '') END, COALESCE(domain, ''), COALESCE(outcome,'unknown') FROM events {filter} ORDER BY {order} LIMIT ?5 OFFSET ?6")) {
             Ok(s) => s,
